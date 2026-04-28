@@ -563,7 +563,70 @@ class MiniMindConfig(PretrainedConfig):
             # • 工程意义:
             #   Position Encoding波长 λ = 2π·θ^(2i/d)
             #   → θ增大时，远距离位置仍能保持明显相位差
+            # RoPE 的核心思想
+            # ------------------------------------------------------------------------------
+            # RoPE 的本质：使用旋转矩阵对 token 的位置信息进行编码。
+            # 对于位置为 m 的向量，将每两个维度视为一个复数，其旋转角度计算如下：
+            #
+            #   θ_i(m) = m * (1 / θ^(2i/d))
+            #
+            # 其中：
+            #   m        -> token 在序列中的位置索引
+            #   i        -> 维度对编号 (0, 1, 2, ..., d//2 - 1)
+            #   d        -> attention head 的维度 (头维度)
+            #   θ (theta) -> rope_theta 超参数（如 LLaMA-3 使用 500000，此处示例为 1_000_000.0）
 
+            # 波长公式及其物理意义
+            # ------------------------------------------------------------------------------
+            # 每个维度对应的“波长”表示旋转一整圈（2π 弧度）所需的 token 数量：
+            #
+            #   λ_i = 2π * θ^(2i/d)
+            #
+            # 维度变化趋势（从 i=0 到 i=d//2-1）：
+            #   i = 0     → λ = 2π * θ^0          = 2π        ← 最短波长，旋转最快
+            #   i = 1     → λ = 2π * θ^(2/d)                  ↑
+            #   i = 2     → λ = 2π * θ^(4/d)                  | 波长随 i 指数增长
+            #   ...                                           ↓
+            #   i = d//2  → λ = 2π * θ^1           = 2π * θ  ← 最长波长，旋转最慢
+            #
+            # 这与 Sinusoidal 位置编码本质一致，只是 RoPE 将位置信息编码在旋转矩阵中，
+            # 而非直接加在 embedding 上，从而保持相对位置的线性依赖性。
+
+            # rope_theta 对旋转速度的影响
+            # ------------------------------------------------------------------------------
+            # 各维度角速度定义：
+            #
+            #   角速度_i = 1 / θ^(2i/d)  [单位：rad / token]
+            #
+            # 最慢旋转维度（i = d//2-1）的波长为：
+            #
+            #   λ_max = 2π * θ
+            #
+            # rope_theta 取值与有效上下文长度的关系：
+            #   rope_theta =     10_000  → λ_max ≈    62,832 tokens  <  4k  (原始 LLaMA)
+            #   rope_theta =    100_000  → λ_max ≈   628,320 tokens  < 32k  (LLaMA-3)
+            #   rope_theta = 1_000_000   → λ_max ≈ 6,283,185 tokens  > 100k (当前示例)
+            #
+            # 关键规律：
+            #   rope_theta 越大 → 最慢维度角速度越小 → 远距离 token 间相位差更明显
+            #   → 模型能更好地区分更远的位置，从而支持更长的上下文。
+
+            # 慢速旋转为何有利于长文本建模？
+            # ------------------------------------------------------------------------------
+            # 直观对比（设 d=128）：
+            #
+            # 情况 A：rope_theta = 10_000
+            #   最慢维度角速度 = 1 / 10_000 = 0.0001 rad/token
+            #   - 位置 1000 与 1001：角度差 = 0.0001 rad      ✅ 可清晰区分
+            #   - 位置 9000 与 9001：角度差 = 0.0001 rad      ✅ 仍可区分
+            #   - 位置 60000 与 60001：角度 ≈ 6 rad ≈ 接近 2π → 相位“碰撞” ❌ 难以区分
+            #
+            # 情况 B：rope_theta = 1_000_000
+            #   最慢维度角速度 = 1 / 1_000_000 = 0.000001 rad/token
+            #   - 位置 60000 与 60001：角度差 = 0.000001 rad  ✅ 始终可区分
+            #
+            # 结论：更大的 rope_theta 使最低频分量变化更缓慢，
+            # 有效延迟了“相位环绕”带来的位置混淆，从而提升长文本建模能力。
             # ───────────────────────────────────────────────────────────────────────────────
             # 【2】RoPE 注入时机 (计算流程图)
             # ───────────────────────────────────────────────────────────────────────────────
@@ -577,6 +640,146 @@ class MiniMindConfig(PretrainedConfig):
             # • 非预处理: 不修改输入embedding
             # • 计算中注入: 仅在Q,K点积前应用位置信息
             # • 即时性: 每个token pair动态计算相对位置
+            # 原始 token ids
+            #       │
+            #       ▼
+            # ┌─────────────┐
+            # │  Embedding  │  token_id → 向量  shape: [B, seq_len, hidden_dim]
+            # │  查找表     │
+            # └─────────────┘
+            #       │
+            #       ▼  ← 这里是 "原始 embedding"，还没有任何 Norm
+            #       │
+            # ╔═════════════════════════════════════════════╗
+            # ║  Transformer Block × N                      ║
+            # ║                                             ║
+            # ║   ┌─────────────┐                           ║
+            # ║   │  RMSNorm    │  ← 注释里说的就是这个！   ║
+            # ║   └──────┬──────┘                           ║
+            # ║          │                                  ║
+            # ║   ┌──────▼──────┐                           ║
+            # ║   │  Q, K, V    │  线性变换                 ║
+            # ║   │  投影       │                           ║
+            # ║   └──────┬──────┘                           ║
+            # ║          │                                  ║
+            # ║   ┌──────▼──────┐                           ║
+            # ║   │  RoPE 注入  │  仅作用于 Q, K            ║
+            # ║   └──────┬──────┘                           ║
+            # ║          │                                  ║
+            # ║   ┌──────▼──────┐                           ║
+            # ║   │  Attention  │  QK^T / √d                ║
+            # ║   └─────────────┘                           ║
+            # ╚═════════════════════════════════════════════╝
+            # 为什么要在这里 Norm？
+            # embedding 输出的值域不稳定
+            #     │
+            #     │  各个 token 的向量模长可能差异很大
+            #     │  例如高频词 vs 低频词的 embedding 尺度不同
+            #     ▼
+            # 直接做 Q K^T 点积 → 数值爆炸 → softmax 饱和 → 梯度消失
+
+
+            # 详细拆解Transformer架构中缩放因子的数学机制，包含五个关键环节的深度推导。
+
+            # ==============================================================================
+            # 阶段一：QK^T 数值爆炸的成因分析
+            # ------------------------------------------------------------------------------
+            # 核心发现：高维空间中的距离累积效应导致点积方差线性增长
+
+            # 数学原理：
+            #   • 设 q_i, k_i ~ N(0,1) 独立同分布
+            #   • Var(q·k) = Σ_i Var(q_i*k_i) = d_k * 1 = d_k
+            #   • 标准差 = √d_k → 实际值域 ≈ ±3√d_k (99.7%置信区间)
+
+            # 几何解释：
+            #   ✓ (2D): 向量夹角分布均匀，点积值域[-1,1]
+            #   ✓ (512D): 99%向量对夹角>80°，但累积效应仍产生±22.6量级点积
+            #   ✓ (1024D): 点积标准差达32，进入危险区间
+
+            # 数值示例：
+            #   当 d_k=1024 时：
+            #     - 未缩放点积范围：[-96, 96] (3σ范围)
+            #     - 典型绝对值：32±16（均值±标准差）
+
+            # ==============================================================================
+            # 阶段二：Softmax饱和的临界点分析
+            # ------------------------------------------------------------------------------
+            # 指数函数的非线性特性：exp(x) 在|x|>5时呈现极端行为
+
+            # 软饱和阈值：
+            #   • |Δz|=5 → 概率比 e^5 ≈ 148:1
+            #   • |Δz|=10 → 概率比 e^10 ≈ 22026:1
+            #   • |Δz|=20 → 数值上溢(Inf)风险
+
+            # 模拟对比实验：
+            #   TestCase1: [1,2,3,4] → softmax=[0.03,0.09,0.24,0.64]
+            #     - 熵值：1.15 nats
+            #     - 最大梯度：0.23
+            
+            #   TestCase2: [10,20,30,40] → softmax≈[0,0,0,1]
+            #     - 熵值：0 nats 
+            #     - 所有梯度分量≈1e-18
+
+            # 关键结论：只要存在单个主导项（max(z)-次大值>10）即导致softmax输出退化
+
+            # ==============================================================================
+            # 阶段三：梯度消失的数学证明
+            # ------------------------------------------------------------------------------
+            # 通过Jacobian矩阵分析softmax反向传播特性
+
+            # 导数公式推导：
+            #   ∂p_i/∂z_j = p_i * (I(i=j) - p_j)
+            
+            # 梯度分量分类计算：
+            #   • 自导数项 (i=j):
+            #     - 饱和时：p_max≈1 → p_max*(1-p_max)≈0
+            #     - 例：p=[0,0,0.001,0.999]
+            #       ∂p4/∂z4 = 0.999*(1-0.999) ≈ 0.001
+            
+            #   • 交叉导数项 (i≠j):
+            #     - 非最大项：∂p_nonmax/∂z_max = -p_nonmax * p_max ≈0
+            #     - 最大项交叉项：p_max * p_j ≈0 (j≠max_idx)
+
+            # 数值实验：
+            #   当最大得分超过次大得分15单位时：
+            #     - 最大位置的梯度分量衰减约e^-15≈3e-7倍
+            #     - 次大位置梯度衰减约e^-30≈1e-13倍
+
+            # ==============================================================================
+            # 阶段四：反向传播的级联失效
+            # ------------------------------------------------------------------------------
+            # 梯度传导路径：Loss → Attention → Softmax → QK^T → 参数矩阵
+
+            # 传导链模拟：
+            #   层         | 梯度幅度(示例)
+            #   -----------|----------------
+            #   Loss       | 1.0
+            #   Attn Output| 0.8
+            #   Softmax    | <1e-10 ←─┐
+            #   QK^T       | <1e-15   │← 瓶颈点
+            #   W_q, W_k   | 0        │
+            #   Embedding  | 0       ─┘
+
+            # 诊断方法：
+            #   • 监控各层梯度L2范数
+            #   • 检查softmax输入的最大差分值
+            #   • 当max_diff > 10时触发警告
+
+            # 典型故障现象：
+            #   1. 训练损失在前100步后停止下降
+            #   2. 注意力矩阵变成one-hot分布
+            #   3. 所有头的注意力模式趋同
+
+            # ==============================================================================
+            # 阶段五：√(d_k)缩放的数学验证
+            # ------------------------------------------------------------------------------
+            # 缩放操作：score ← score / √d_k
+
+            # 理论依据：方差归一化原理
+            #   • 原方差：Var(QK^T) = d_k
+            #   • 缩放后：Var(scaled) = d_k / (√d_k)^2 = 1
+            #   • 新值域：±3σ → 约±3 (相比原来的±3√d_k)
+
 
             # ───────────────────────────────────────────────────────────────────────────────
             # 【3】RoPE 计算四步法 (4维示例)
@@ -666,37 +869,6 @@ class MiniMindConfig(PretrainedConfig):
 
             # → θ=1M时，10k距离仍保持86%区分度
 
-            # ───────────────────────────────────────────────────────────────────────────────
-            # 【6】工程实现建议
-            # ───────────────────────────────────────────────────────────────────────────────
-
-            # ✓ 最佳实践:
-            #   1. 长文本模型 (≥8k) → θ ≥ 100000
-            #   2. 预计算表尺寸: 
-            #      table_size = min(2*max_seq_len, 65536)
-            #   3. 混合精度优化:
-            #      • cos/sin表存为FP16
-            #      • 计算时转FP32
-
-            # ✓ 常见陷阱:
-            #   • 不要动态改变θ值 (破坏位置一致性)
-            #   • KV缓存需包含位置信息 (微调时特别注意)
-
-            # ═══════════════════════════════════════════════════════════════════════════════
-            #                        RoPE vs 其他位置编码对比
-            # ═══════════════════════════════════════════════════════════════════════════════
-
-            #               绝对位置编码   相对位置编码    RoPE (本方案)
-            # ─────────────────────────────────────────────────────────
-            # 长度外推性     ❌差            ⭕中等         ✅优秀  
-            # 计算复杂度     O(1)          O(n²)         O(d)    
-            # 内存占用       O(max_len)     O(1)          O(seq_len)
-            # 旋转敏感性     ❌无            ❌无           ✅有 (核心特性)
-            # 适用最大长度   512           2k             32k+   
-            # ─────────────────────────────────────────────────────────
-
-            # → 结论: 当处理>4k长度文档时，RoPE(θ=1M)是唯一可行方案
-            # ═══════════════════════════════════════════════════════════════════════════════
             # """
             inference_rope_scaling: bool = False,   # 是否在推理时启用 RoPE 缩放（用于上下文长度外推）
             # 1. 痛点：模型遇到了没见过的“远方”假设你下载了一个开源大模型，它的官方说明写着：“本模型在 4000 个 Token 的长度下训练完毕”。这意味着在训练期间，模型最多只见过时钟指针转到第 4000 步的位置。它对 0~4000 步的角度变化非常熟悉。灾难发生：如果你在跟它聊天时，强行塞给它一篇 8000 字的文章让它总结。模型的反应：当读到第 4001 个字时，RoPE 算出了一个模型在娘胎（训练集）里从来没见过的旋转角度！模型瞬间就懵了，各个注意力头（Attention Heads）开始瞎匹配，最终输出一堆胡言乱语。这就好比你有一把 40 厘米的尺子，现在非要用它去量 80 厘米的东西，尺子直接不够长了。
@@ -730,8 +902,6 @@ class MiniMindConfig(PretrainedConfig):
             
             
             
-
-
             
             ####################################################
             # 以下是混合专家模型 (MoE) 的专属配置
@@ -823,19 +993,48 @@ class MiniMindConfig(PretrainedConfig):
         
         """
         super().__init__(**kwargs)
+        # Dropout 概率，用于防止模型过拟合，在训练过程中随机将一部分神经元置零
         self.dropout = dropout
+
+        # 序列开始（Beginning of Sequence）标记的 token ID，用于标识输入序列的起始位置
         self.bos_token_id = bos_token_id
+
+        # 序列结束（End of Sequence）标记的 token ID，用于标识输入序列的结束位置
         self.eos_token_id = eos_token_id
+
+        # 隐藏层激活函数的类型（如 "silu", "gelu" 等），用于非线性变换
         self.hidden_act = hidden_act
+
+        # 隐藏状态的维度大小，即每个 token 表示的向量维度（例如 768、4096）
         self.hidden_size = hidden_size
+
+        # 前馈神经网络中间层的维度大小，通常大于 hidden_size，用于增加模型表达能力
         self.intermediate_size = intermediate_size
+
+        # 模型支持的最大位置编码长度，决定输入序列的最大允许长度（如 2048、8192）
         self.max_position_embeddings = max_position_embeddings
+
+        # 注意力机制中查询（query）头的数量，多头注意力中并行计算的注意力头数
         self.num_attention_heads = num_attention_heads
+
+        # Transformer 编码器和解码器中隐藏层的总层数，决定模型深度
         self.num_hidden_layers = num_hidden_layers
+
+        # 键（key）和值（value）注意力头的数量，通常小于或等于 num_attention_heads，
+        # 用于分组查询注意力（GQA）或多查询注意力（MQA），提升推理效率
         self.num_key_value_heads = num_key_value_heads
+
+        # 词表大小，即模型可以识别的唯一 token 总数（如 32000、128256）
         self.vocab_size = vocab_size
+
+        # RMS 归一化（Root Mean Square Layer Normalization）中的 epsilon 值，
+        # 用于防止除零错误，提高数值稳定性
         self.rms_norm_eps = rms_norm_eps
+
+        # RoPE（旋转位置编码）的频率基数参数，控制位置编码的波长分布
         self.rope_theta = rope_theta
+
+        # 推理时 RoPE 的缩放因子，用于扩展或压缩位置编码以适应长序列推理需求
         self.inference_rope_scaling = inference_rope_scaling
         
         # RoPE 缩放配置，用于支持超长上下文窗口 (例如 YaRN 算法)
@@ -849,19 +1048,50 @@ class MiniMindConfig(PretrainedConfig):
             "type": "yarn"                                 # 使用 YaRN (Yet another RoPE extensioN) 外推方法
         } if self.inference_rope_scaling else None
         
+
+        # type: str
+        # 作用：指定使用的 RoPE 缩放算法为 YaRN。
+        # 背景：在 YaRN 出现之前，常见的扩展方法有线性插值（Linear Interpolation）和 NTK-aware 插值。YaRN 是目前最先进的方法之一。
+        # 它通过对位置编码中不同频率的维度进行分类处理，解决了直接插值会导致模型丧失局部位置感知能力的问题。
+
+        # original_max_position_embeddings: int
+        # 作用：声明模型在预训练时见过的最大序列长度（这里是 2048 个 Token）。
+        # 意义：这是缩放计算的基准点。模型原本只懂 0 到 2047 的位置，任何超出这个范围的位置都需要通过缩放算法“映射”回这个安全区间内。
+
+        # factor: float
+        # 作用：上下文的扩展倍数。
+        # 计算：结合上一条，模型现在的最大上下文长度将被扩展到 $2048 \times 16 = 32768$ 个 Token。
+
+        # beta_fast: float 与 beta_slow: float
+        # 作用：这两个参数是 YaRN 算法的核心，用于定义频率边界。
+        # 背景：RoPE 是由多个不同频率的旋转矩阵组成的，YaRN 根据频率（波长）将它们分为三类：
+        #   - 高频部分（波长短，对应相邻的 Token）：用来感知局部、近距离的位置关系。如果对高频进行插值压缩，模型会变得“近视”，分不清相邻词的顺序。
+        #     因此，对于波长与上下文长度比例小于 beta_slow 的高频维度，YaRN 完全不缩放，保持原样。
+        #   - 低频部分（波长长，对应距离极远的 Token）：用来感知全局、长距离的位置关系。如果直接外推，会出现模型从未见过的巨大角度值。
+        #     因此，对于波长比例大于 beta_fast 的低频维度，YaRN 会进行线性插值（按 factor 进行缩放）。
+        #   - 中频部分：介于两者之间，YaRN 会平滑地过渡（混合使用外推和插值）。
+        # 注：在某些实现版本中，beta_fast 和 beta_slow 的数值指向直接影响频率维度的索引映射，但其背后的物理意义都是为了区分“保留局部特征”和“缩放全局特征”。
+
+        # attention_factor: float
+        # 作用：注意力机制的温度缩放补偿因子。
+        # 背景：随着上下文变得越来越长（比如从 2K 扩展到 32K），注意力机制（Attention）需要分配权重的 Token 数量急剧增加。
+        # 这会导致注意力分数变得越来越平滑（即注意力熵增加），模型容易“分心”。
+        # 机制：YaRN 论文中提出，在计算 softmax 之前将注意力分数乘以一个系数（通常大于 1）可以补偿这种信息稀释。
+        # 在这里设置为 1.0，意味着没有应用额外的注意力缩放（或者外层代码有另外的自适应温度计算逻辑，这里仅提供一个基础乘数）。
+
         self.flash_attn = flash_attn
         
         ####################################################
         # MoE 具体配置赋值
         ####################################################
-        self.use_moe = use_moe
-        self.num_experts_per_tok = num_experts_per_tok  
-        self.n_routed_experts = n_routed_experts  
-        self.n_shared_experts = n_shared_experts  
-        self.scoring_func = scoring_func  
-        self.aux_loss_alpha = aux_loss_alpha  
-        self.seq_aux = seq_aux  
-        self.norm_topk_prob = norm_topk_prob  
+        self.use_moe = use_moe  # 是否使用混合专家（Mixture of Experts, MoE）结构
+        self.num_experts_per_tok = num_experts_per_tok  # 每个 token 选择的专家数量（top-k 路由）
+        self.n_routed_experts = n_routed_experts  # 路由专家的总数量（参与动态选择的专家数）
+        self.n_shared_experts = n_shared_experts  # 共享专家的数量（所有 token 都会经过的固定专家）
+        self.scoring_func = scoring_func  # 用于计算专家选择得分的函数（如 softmax、sigmoid 等）
+        self.aux_loss_alpha = aux_loss_alpha  # 辅助损失的权重系数，用于平衡负载均衡损失
+        self.seq_aux = seq_aux  # 是否使用基于序列的辅助损失（如考虑 token 序列分布）
+        self.norm_topk_prob = norm_topk_prob  # 是否对 top-k 选择的专家概率进行归一化处理
 
 
 # 📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘
@@ -893,7 +1123,7 @@ class RMSNorm(torch.nn.Module):
         # 计算公式: x / sqrt(mean(x^2) + eps)
         # 使用 rsqrt (平方根倒数) 会比 1 / sqrt 运行得更快：1.现代处理器（特别是 GPU）为了加速 3D 图形渲染和科学计算，专门为“平方根倒数”设计了独立的硬件指令。2.它在芯片内部将其打包成了一个高吞吐量的单一操作，消耗的 CPU/GPU 时钟周期（Clock Cycles）显著少于先开方再做除法。3.在计算机底层的算术逻辑单元（ALU）中，运算速度的排名通常是：加法/减法 ≈ 乘法 > 乘加 (FMA) >>> 开方 >>> 除法。
         # 乘加 (FMA)作用是在一个时钟周期内，一步到位地完成乘法和加法的组合运算。它的基本数学公式是：$d = a \times b + c$
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)#mean(-1)：沿着最后一个维度求平均。
 
     def forward(self, x):
         # 保证在 float32 精度下进行归一化计算，防止溢出，之后再转回原始数据类型 (如 fp16/bf16)
@@ -928,14 +1158,15 @@ def precompute_freqs_cis(dim: int, end: int = int(32 * 1024), rope_base: float =
             rope_scaling.get("beta_slow", 1.0), 
             rope_scaling.get("attention_factor", 1.0)
         )
-        if end / orig_max > 1.0:
+        if end / orig_max > 1.0:#只有当当前需要的上下文长度超出了模型原生的最大长度时（即需要进行上下文扩展时），才触发 YaRN 算法。
             # YaRN 算法核心逻辑: f'(i) = f(i)((1-γ) + γ/s)
             # 对高频部分不缩放，对低频部分进行线性缩放，中间部分进行过渡
-            inv_dim = lambda b: (dim * math.log(orig_max / (b * 2 * math.pi))) / (2 * math.log(rope_base))
-            low, high = max(math.floor(inv_dim(beta_fast)), 0), min(math.ceil(inv_dim(beta_slow)), dim // 2 - 1)
+            inv_dim = lambda b: (dim * math.log(orig_max / (b * 2 * math.pi))) / (2 * math.log(rope_base))# 计算逆维度，即将频率映射到维度上
+            low, high = max(math.floor(inv_dim(beta_fast)), 0), min(math.ceil(inv_dim(beta_slow)), dim // 2 - 1)#算了两个关键的维度边界 low 和 high
             # 计算斜坡函数 (Ramp function) 以实现平滑过渡
             ramp = torch.clamp((torch.arange(dim // 2, device=freqs.device).float() - low) / max(high - low, 0.001), 0, 1)
-            freqs = freqs * (1 - ramp + ramp / factor)
+            #这里生成了一个长度为 dim // 2 的向量，代表每个维度对应的过渡因子 $\gamma$。
+            freqs = freqs * (1 - ramp + ramp / factor)#这里的 factor ($s$) 是上下文扩展的倍数（例如要将 4k 扩展到 16k，factor = 4）。代码通过加权平均巧妙地一次性对所有维度完成了分段处理
 
     # 构造长度为 end 的位置索引 t
     t = torch.arange(end, device=freqs.device)
@@ -943,7 +1174,8 @@ def precompute_freqs_cis(dim: int, end: int = int(32 * 1024), rope_base: float =
     freqs = torch.outer(t, freqs).float()
     # 将频率拼接以匹配 dim 维度，生成实部 (cos) 和虚部 (sin)
     freqs_cos = torch.cat([torch.cos(freqs), torch.cos(freqs)], dim=-1) * attn_factor
-    freqs_sin = torch.cat([torch.sin(freqs), torch.sin(freqs)], dim=-1) * attn_factor
+    freqs_sin = torch.cat([torch.sin(freqs), torch.sin(freqs)], dim=-1) * attn_factor#注意力缩放因子 (attn_factor) —— YaRN 的精髓
+    #形状变为 (end, dim)。这使得它可以直接与形状为 (batch, head, seq, dim) 的 Query/Key 向量进行逐元素相乘
     return freqs_cos, freqs_sin
 
 
@@ -982,26 +1214,53 @@ class Attention(nn.Module):
     """
     def __init__(self, args: MiniMindConfig):
         super().__init__()
+        # 设置 Key-Value 头的数量：
+        # 如果未显式指定 num_key_value_heads，则默认与注意力头数相同（即普通多头注意力 MHA）
+        # 否则使用指定的值（用于实现 MQA 或 GQA）
         self.num_key_value_heads = args.num_attention_heads if args.num_key_value_heads is None else args.num_key_value_heads
+
+        # 断言：注意力头数必须是 KV 头数的整数倍，确保可以均匀分组（用于 GQA）
         assert args.num_attention_heads % self.num_key_value_heads == 0
-        
+
+        # 当前设备上（或当前层）的本地注意力头数（通常为总头数，在单机单卡情况下）
         self.n_local_heads = args.num_attention_heads
+
+        # 当前设备上的本地 KV 头数量（用于共享 KV 的模型如 GQA/MQA）
         self.n_local_kv_heads = self.num_key_value_heads
-        # Query 数量是 KV 数量的几倍 (即组内重复的次数)
+
+        # 每个 KV 头对应的 Query 头数量，即组内重复次数（GQA 中每组共享一个 KV 对）
+        # 例如：8 个 Q 头，2 个 KV 头 → 每个 KV 被 4 个 Q 共享 → n_rep = 4
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
+
+        # 每个注意力头的维度大小（总隐藏层维度除以头数）
         self.head_dim = args.hidden_size // args.num_attention_heads
-        
-        # Q, K, V 投影矩阵 (不带偏置)
+
+        # Query 投影层：将输入 hidden_states 映射为 Query 向量
+        # 输出维度为 (num_attention_heads * head_dim)，即所有 Q 头的拼接
         self.q_proj = nn.Linear(args.hidden_size, args.num_attention_heads * self.head_dim, bias=False)
+
+        # Key 投影层：映射为 Key 向量，仅生成 num_key_value_heads 个头
         self.k_proj = nn.Linear(args.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+
+        # Value 投影层：映射为 Value 向量，同样只生成 num_key_value_heads 个头
         self.v_proj = nn.Linear(args.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        # 输出映射矩阵
+
+        # 输出投影层：将多头注意力的输出重新映射回原始隐藏层维度
+        # 输入是所有注意力头的拼接结果 (num_attention_heads * head_dim)
         self.o_proj = nn.Linear(args.num_attention_heads * self.head_dim, args.hidden_size, bias=False)
-        
+        # 将多个注意力头的输出（拼接后的张量）通过一个全连接层，还原为 hidden_size 维度，以便与残差连接相加。
+        # 注意力权重 dropout（在 softmax 后对注意力分数应用 dropout）
         self.attn_dropout = nn.Dropout(args.dropout)
+
+        # 残差连接后的 dropout（应用于注意力输出的残差路径）
         self.resid_dropout = nn.Dropout(args.dropout)
+
+        # 保存 dropout 概率值，供后续前向传播使用
         self.dropout = args.dropout
-        # 检测环境是否支持 PyTorch 原生的 Flash Attention (PyTorch >= 2.0)
+
+        # 检查当前 PyTorch 环境是否支持原生的 Flash Attention（PyTorch >= 2.0 支持）
+        # 并且用户启用了 flash_attn 选项（通过 args.flash_attn 控制）
+        # 若支持，则后续前向传播可使用高效的自定义 attention kernel
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and args.flash_attn
 
     def forward(self,
@@ -1011,15 +1270,25 @@ class Attention(nn.Module):
                 use_cache=False,
                 attention_mask: Optional[torch.Tensor] = None):
         
+        # 获取输入 x 的批量大小(batch size)、序列长度(sequence length)和特征维度
+        # x.shape = (batch_size, sequence_length, hidden_dim)
         bsz, seq_len, _ = x.shape
-        # 计算 Q, K, V
+        
+        # 通过三个独立的线性层分别计算查询(Q)、键(K)、值(V)矩阵
+        # 每个投影的输出维度均为 hidden_dim (n_heads * head_dim)
         xq, xk, xv = self.q_proj(x), self.k_proj(x), self.v_proj(x)
-        # 拆分出多头维度 -> (batch, seq_len, n_heads, head_dim)
+        
+        # 将投影后的张量重塑为多头维度格式
+        # 原始形状: (batch_size, seq_len, n_heads * head_dim)
+        # 重塑后: (batch_size, seq_len, n_heads, head_dim)
+        # 这样每个头的注意力可以独立计算
         xq = xq.view(bsz, seq_len, self.n_local_heads, self.head_dim)
+        # 对于键(K)和值(V)，可能使用较少的头数(GQA/MQA场景)
+        # n_local_kv_heads <= n_local_heads
         xk = xk.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
 
-        cos, sin = position_embeddings
+        cos, sin = position_embeddings #预先计算好的位置编码
         # 应用旋转位置编码
         xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin)
 
@@ -1041,23 +1310,60 @@ class Attention(nn.Module):
         # 注意力计算核心逻辑
         if self.flash and (seq_len > 1) and (past_key_value is None) and (attention_mask is None or torch.all(attention_mask == 1)):
             # 路径 1: 训练阶段使用高效的 Flash Attention 计算，自动构建因果掩码 (is_causal=True)
-            output = F.scaled_dot_product_attention(xq, xk, xv, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
+            # 条件说明：
+            # - self.flash: 启用 Flash Attention 优化
+            # - seq_len > 1: 序列长度大于 1（避免单 token 输入时因果掩码无意义）
+            # - past_key_value is None: 当前是首次计算（非自回归推理，无 KV Cache）
+            # - attention_mask is None or all ones: 无自定义掩码或掩码全为 1（即无 padding）
+            # 使用 PyTorch 内置的 fused 操作，自动处理因果掩码和缩放，极大提升训练效率
+            output = F.scaled_dot_product_attention(
+                xq, xk, xv,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=True # 因果掩码，确保每个位置只能关注之前的位置，适用于自回归生成任务
+            )
         else:
             # 路径 2: 推理阶段 (带 cache) 或遇到特定 attention_mask 时使用手动计算的 Attention
+            # 适用于以下情况：
+            # - 使用 KV Cache 的自回归推理（past_key_value 不为 None）
+            # - 存在自定义 attention_mask（如 padding mask）
+            # - Flash Attention 未启用或不适用
+            # 手动实现 QK^T / sqrt(d) 的注意力分数计算
             scores = (xq @ xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
+
             # 添加下三角的因果掩码 (Causal Mask) 以防止看到未来的 token
-            scores[:, :, :, -seq_len:] += torch.triu(torch.full((seq_len, seq_len), float("-inf"), device=scores.device), diagonal=1)
+            # 仅对当前输入的 seq_len 部分应用因果掩码（scores 的最后一维是当前输入的 token 范围）
+            # torch.triu(..., diagonal=1) 生成上三角矩阵，对角线以上设为 -inf，实现“不能看未来”
+            scores[:, :, :, -seq_len:] += torch.triu(
+                torch.full((seq_len, seq_len), float("-inf"), device=scores.device),
+                diagonal=1
+            )
 
             # 如果传入了自定义的 attention_mask (通常用于 padding 屏蔽)
+            # 例如：attention_mask 中 0 表示 padding token，需要屏蔽其注意力
             if attention_mask is not None:
+                # 将 attention_mask 扩展为 [batch, 1, 1, seq_len] 以便广播到 scores 上
                 extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+                # 将 mask 中 0 转为 -1e9，1 保持为 0，加到 scores 上实现屏蔽
                 extended_attention_mask = (1.0 - extended_attention_mask) * -1e9
                 scores = scores + extended_attention_mask
 
+            # 对注意力分数进行 softmax 归一化（先转为 float 以保持精度）
             scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+            # 应用 dropout（仅在训练时生效）
             scores = self.attn_dropout(scores)
+            # 使用注意力权重加权求和 Value 得到输出
             output = scores @ xv
+        # 路径 1（训练阶段 / 推理的 Prefill 阶段）：
+        # 此时模型一次性接收很长的一段文本（seq_len > 1），且没有历史缓存（past_key_value is None）。
+        # 此时 Q 和 K 的序列长度相同，注意力矩阵是一个巨大的 N x N 方阵。
+        # 此时使用 F.scaled_dot_product_attention(..., is_causal=True) 可以直接应用标准的下三角掩码，非常完美。
 
+        # 路径 2（推理的逐词生成阶段 / Decoding）：
+        # 大模型在生成文本时是一个词一个词蹦出来的。为了加速，我们会把之前计算过的 K 和 V 存起来
+        # （即 KV Cache，此时 past_key_value 不为 None）。在这种情况下，当前输入的 Q 长度只有 1，
+        # 而 K 的长度是之前的总长度 L。注意力分数矩阵形状变成了 1 x L。
+        # 此时标准的 N x N is_causal=True 逻辑不再适用，因此必须走路径 2 手动计算 Q x K^T，
+        # 并手动拼接和处理因果掩码。
         # 将多头输出拼接回一起: (batch, seq_len, hidden_size)
         output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
         # 最后经过一个线性映射层与 Dropout
