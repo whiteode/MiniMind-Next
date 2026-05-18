@@ -1382,13 +1382,15 @@ class FeedForward(nn.Module):
         if config.intermediate_size is None:
             intermediate_size = int(config.hidden_size * 8 / 3)
             config.intermediate_size = 64 * ((intermediate_size + 64 - 1) // 64)
+
             
         self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
         self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.dropout = nn.Dropout(config.dropout)
         self.act_fn = ACT2FN[config.hidden_act] # 例如 Swish/SiLU
-
+        #Swish/SiLU 是什么？SiLU就是输入 x 乘以它自己的 Sigmoid 值
+        #Swish(x) = x * sigma(beta*x);当beta==1时，Swish(x) = SiLU(x)
     def forward(self, x):
         # 计算公式: DownProj( ActFn( GateProj(x) ) * UpProj(x) )
         # 也就是左侧通过门控网络计算激活值，右侧直接进行线性映射，两边对应元素相乘
@@ -1406,18 +1408,233 @@ class MoEGate(nn.Module):
         self.top_k = config.num_experts_per_tok      # 激活数
         self.n_routed_experts = config.n_routed_experts # 总专家数
 
-        self.scoring_func = config.scoring_func
+        self.scoring_func = config.scoring_func  #打分函数配置，比如softmax/Sigmoid/gumbel-softmax
+        #softmax/Sigmoid/gumbel-softmax数学实现
+
+        # def sigmoid(x):
+        #     # 计算 sigmoid 函数
+        #     return 1.0 / (1.0 + math.exp(-x))
+
+
+
+        # def softmax(logits):
+        #     # 数值稳定化：减去最大值
+        #     max_logit = max(logits)
+        #     exps = [math.exp(x - max_logit) for x in logits]
+        #     sum_exps = sum(exps)
+        #     return [exp_i / sum_exps for exp_i in exps]
+
+
+
+        # def sample_gumbel():
+        #     u = random.random()
+        #     return -math.log(-math.log(u))
+
+        # def gumbel_softmax(logits, tau=1.0):
+        #     # 为每个 logits 添加 Gumbel 噪声
+        #     gumbels = [sample_gumbel() for _ in logits]
+        #     noisy = [(logit + g) / tau for logit, g in zip(logits, gumbels)]
+
+        #     # 归一化成概率
+        #     max_noisy = max(noisy)
+        #     exps = [math.exp(x - max_noisy) for x in noisy]
+        #     sum_exps = sum(exps)
+        #     return [exp_i / sum_exps for exp_i in exps]
+
+
         self.alpha = config.aux_loss_alpha           # 辅助损失系数
+        #MoE 的训练总损失是由两部分相加而来的：Total Loss = Language Modeling Loss (如交叉熵) + alpha * Auxiliary Loss
         self.seq_aux = config.seq_aux
+        #它是一个布尔值（True 或 False），用来决定辅助损失（Auxiliary Loss）是在“单条序列（Sequence）”级别计算，还是在“整个批次（Batch）”级别计算。
 
         self.norm_topk_prob = config.norm_topk_prob
+        #这是一个布尔控制开关（True 或 False），决定了在选出得分最高的 K 个专家后，是否需要对这 K 个专家的权重进行二次归一化（使其相加等于 1）。
         self.gating_dim = config.hidden_size
+        #指定路由网络的输入特征维度。它直接绑定了 Transformer 的核心隐藏层维度（hidden_size，如 2048, 4096 等）。
         # 路由权重矩阵
         self.weight = nn.Parameter(torch.empty((self.n_routed_experts, self.gating_dim)))
-        self.reset_parameters()
+        #这是门控模块中唯一需要被训练的参数矩阵。它的形状是 (n_routed_experts, hidden_size)。
+        #矩阵的每一行，都是一个长度为 hidden_size 的特征向量。
+        #第 i 行向量，就是第 i 个专家的“专业画像（关键词）”。
+        #当前向传播执行 F.linear(hidden_states, self.weight) 时，本质上是把 Token 的向量与这 N 个专家的画像逐一做内积（点乘）。方向越一致、内积越大的专家，得分就越高。
+        # def demo_moe_gate_example():
+        #     # 1. 模拟配置：假设有 3 个专家，特征维度为 2，每个 Token 激活 2 个专家
+        #     n_routed_experts = 3
+        #     hidden_size = 2
+        #     top_k = 2
+
+        #     # 2. 模拟专家画像矩阵 (self.weight)
+        #     # 行：专家编号；列：特征维度（维度0是技术，维度1是文艺）
+        #     weight = torch.tensor([
+        #         [1.0, 0.0],  # 专家 0：纯技术
+        #         [0.0, 1.0],  # 专家 1：纯文艺
+        #         [0.7, 0.7]   # 专家 2：斜杠青年（兼顾技术与艺术）
+        #     ], dtype=torch.float32)
+
+        #     # 3. 模拟输入的 Token 向量 (hidden_states)
+        #     # “用 Python 画爱心”（假设这是一个token） -> 技术属性 0.8，艺术属性 0.2
+        #     hidden_states = torch.tensor([[0.8, 0.2]], dtype=torch.float32)
+
+        #     print(f"--- 1. 输入 Token 向量 --- \n{hidden_states}\n")
+
+        #     # 4. 核心计算：执行 F.linear 计算内积（得分）
+        #     # 底层逻辑就是 hidden_states 矩阵乘 weight 的转置
+        #     logits = F.linear(hidden_states, weight, bias=None)
+        #     print(f"--- 2. 原始内积得分 (Logits) --- \n{logits}")
+        #     print("解释: [Token与专家0内积, Token与专家1内积, Token与专家2内积]\n")
+
+        #     # 5. 计算 Softmax 概率
+        #     scores = logits.softmax(dim=-1)
+        #     print(f"--- 3. Softmax 后的全局概率 --- \n{scores}\n")
+
+        #     # 6. 选出分数最高的 top_k 个专家
+        #     topk_weight, topk_idx = torch.topk(scores, k=top_k, dim=-1, sorted=False)
+        #     print(f"--- 4. Top-{top_k} 专家筛选结果 ---")
+        #     print(f"入选专家编号 (topk_idx):   {topk_idx.tolist()}")
+        #     print(f"入选专家原始权重 (topk_weight): {topk_weight.tolist()}\n")
+
+        #     # 7. 重新归一化 Top-K 的分数，使其相加等于 1
+        #     denominator = topk_weight.sum(dim=-1, keepdim=True) + 1e-20
+        #     norm_topk_weight = topk_weight / denominator
+        #     print(f"--- 5. 二次归一化后的最终权重 --- \n{norm_topk_weight.tolist()}")
+        #     print("解释: 确保能量守恒，这两个专家的权重相加严格等于 1.0")
+
+
+        # def demo_multi_token_moe_gate():
+        #     n_routed_experts = 3
+        #     hidden_size = 2
+        #     top_k = 2
+
+        #     # 1. 专家画像矩阵依然保持不变 (形状: 3 x 2)
+        #     weight = torch.tensor([
+        #         [1.0, 0.0],  # 专家 0：纯技术
+        #         [0.0, 1.0],  # 专家 1：纯文艺
+        #         [0.7, 0.7]   # 专家 2：斜杠青年
+        #     ], dtype=torch.float32)
+
+        #     # 2. 真实情况：输入由 4 个 Token 组成的矩阵 (形状: 4 x 2)
+        #     # 每一行代表一个具体的 Token
+        #     hidden_states = torch.tensor([
+        #         [0.7, 0.1],  # Token 0: "写"
+        #         [1.0, 0.0],  # Token 1: "Python"
+        #         [0.9, 0.0],  # Token 2: "代码"
+        #         [0.1, 0.9]   # Token 3: "画爱心"
+        #     ], dtype=torch.float32)
+
+        #     print(f"--- 1. 输入的 4 个 Token 矩阵 (形状: {hidden_states.shape}) ---")
+        #     print(hidden_states, "\n")
+
+        #     # 3. 核心：一行代码，利用矩阵乘法同时计算所有 Token 在所有专家上的得分
+        #     # 形状变化: (4 x 2) * (2 x 3) -> (4 x 3)
+        #     logits = F.linear(hidden_states, weight, bias=None)
+        #     print(f"--- 2. 所有人肉内积矩阵 (Logits, 形状: {logits.shape}) ---")
+        #     print(logits)
+        #     print("注：每一行代表一个 Token 面对 3 个专家分别拿到的内积得分\n")
+
+        #     # 4. 在最后一个维度（专家维度）做 Softmax 概率化
+        #     scores = logits.softmax(dim=-1)
+            
+        #     # 5. 同时捞出这 4 个 Token 各自最喜欢的 Top-2 专家
+        #     topk_weight, topk_idx = torch.topk(scores, k=top_k, dim=-1, sorted=False)
+            
+        #     print(f"--- 3. 路由分流结果 ---")
+        #     token_words = ["'写'", "'Python'", "'代码'", "'画爱心'"]
+        #     for i in range(len(token_words)):
+        #         print(f"Token {i} {token_words[i]}:")
+        #         print(f"  -> 被分流给专家编号: {topk_idx[i].tolist()}")
+        #         print(f"  -> 它们的原始 Softmax 分数: {topk_weight[i].tolist()}")
+                
+        #         # 二次归一化
+        #         denom = topk_weight[i].sum() + 1e-20
+        #         norm_w = topk_weight[i] / denom
+        #         print(f"  -> 归一化后的最终加权系数: {norm_w.tolist()}\n")
+
+        self.reset_parameters()#Kaiming 均匀初始化（何恺明初始化）
 
     def reset_parameters(self) -> None:
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        #方差自适应：它会根据输入的维度（gating_dim）自动计算出最合适的随机值范围。输入维度越宽，初始化的随机值就越收敛、越小。打破对称，鼓励探索：在训练第一步，每个专家的画像向量被均匀、随机地洒在隐藏空间的不同方向上。这种“均匀分布”给予了每个专家在起跑线上完全公平的竞争机会，极大地协助了 Router 在训练初期去大胆探索不同专家的独特技能方向，从根本上缓解了后续发生“路由崩溃”的概率。
+        #问题1：如何根据输入的维度（gating_dim）自动计算出最合适的随机值范围
+        # # 1. 计算 fan_in（输入维度）
+        # fan_in = self.weight.size(1)  # 即 gating_dim
+
+        # # 2. 计算增益（gain）
+        # gain = math.sqrt(2.0 / (1 + a**2))  # a=math.sqrt(5)
+        # # 对于 a=sqrt(5)，gain ≈ 0.408
+        # 既然激活函数要砍掉一部分能量，那我们就在初始化权重矩阵时，根据激活函数的特性，提前乘上一个修正系数。这个系数就叫 gain（增益）。
+        # 这个公式是针对 LeakyReLU 激活函数量身定制的。
+        # def leaky_relu(x, alpha=0.01):
+        #     """LeakyReLU 激活函数 - 简洁版本"""
+        #     return x if x > 0 else alpha * x
+        # 假设输入信号 x 服从标准高斯分布（均值为0，方差为1）
+        # 
+        # 正半轴部分（x > 0）：
+        #   - 有50%的数据落在此区域
+        #   - 直接通过，能量保持不变：1 × 0.5
+        #
+        # 负半轴部分（x ≤ 0）：
+        #   - 有50%的数据落在此区域
+        #   - 被缩放 a 倍（a 是 LeakyReLU 的负斜率）
+        #   - 根据方差性质：变量扩大 a 倍 → 方差（能量）扩大 a² 倍
+        #   - 所以这部分能量变为：a² × 0.5
+        #
+        # 总残余能量（方差） = 正半轴能量 + 负半轴能量
+        #                   = 0.5 + 0.5 × a²
+        #                   = (1 + a²) / 2
+        #
+        # 为了在初始化时将能量补回1.0，需要给权重矩阵乘以一个补偿系数（gain）
+        # 由于我们控制的是标准差（std），而 std = sqrt(方差)
+        # 所以 gain = sqrt(1 / 残余方差) = sqrt(2.0 / (1 + a²))
+
+        # # 3. 计算标准差
+        # std = gain / math.sqrt(fan_in)
+        # 因为输入矩阵乘法时，信号是由 fan_in（输入维度）个不同的通道累加出来的。为了防止这成千上万个通道的数据加在一起导致能量爆炸，每个通道的权重必须平摊这部分能量，因此要除以 sqrt{fan_in}。
+            # 1. 拆解矩阵乘法的"大乱斗"
+            # 我们在前面学过，Token 向量进入 Router 后，会与专家的画像做内积（点乘）。
+            # 假设输入的 Token 向量是 X = [x_1, x_2, ..., x_n]，某个专家的画像权重是 W = [w_1, w_2, ..., w_n]。
+            # 其中 n 就是输入维度 fan_in。
+            # 它们做内积算出来的原始得分（Logit）可以写成一个求和公式：
+            # Logit = x_1*w_1 + x_2*w_2 + ... + x_n*w_n = Σ(x_i * w_i)，其中 i 从 1 到 n。
+
+            # 2. 统计学里的"能量累加"
+            # 根据概率论与统计学的基本原理，如果我们要计算最终输出 Logit 的方差（能量），
+            # 由于每个输入通道和权重都是独立随机采样的，独立变量相加时，它们的方差是直接累加的：
+            # Var(Logit) = Var(x_1*w_1) + Var(x_2*w_2) + ... + Var(x_n*w_n)
+            # 根据方差的性质，两个独立且均值为 0 的随机变量相乘，其方差等于它们各自方差的乘积（Var(x*w) = Var(x) * Var(w)）。
+            # 假设我们希望输入信号 X 的方差是标准状态（即 Var(x) = 1），那么公式可以简化为：
+            # Var(Logit) = 1 * Var(w_1) + 1 * Var(w_2) + ... + 1 * Var(w_n)
+            # 因为权重 W 的每一项都是从同一个分布中初始化出来的，所以它们的方差都相等（设为 Var(w)）。
+            # 总共有 n 个（即 fan_in 个）通道相加：
+            # Var(Logit) = n * Var(w) = fan_in * Var(w)
+
+            # 3. 为了"能量守恒"，反向推导 Var(w)
+            # 何恺明初始化的根本追求，是让信号穿过这一层矩阵乘法后，输出的能量和输入的能量保持一致（即维持在 1.0 附近）。
+            # 同时，上一问我们讲到，激活函数会损耗能量，所以需要引入 gain（在方差层面上就是 gain^2）来进行提前放大补偿。
+            # 因此，我们希望矩阵乘法计算完后的理想方差是：
+            # Var(Logit) = gain^2
+            # 现在，我们把这个理想目标，代入上面的累加公式里：
+            # fan_in * Var(w) = gain^2
+            # 求权重 W 应该具备的初始方差 Var(w)：
+            # Var(w) = gain^2 / fan_in
+
+            # 4. 顿悟：从方差（Variance）到标准差（Std）
+            # 我们在写代码或用标准正态/均匀分布进行采样时，控制的物理量是标准差（std），而不是方差。
+            # 标准差就是方差的开根号：
+            # std = sqrt(Var(w)) = sqrt(gain^2 / fan_in)
+            # 把分子分母同时开根号，就得到了你看到的这一行核心源码逻辑：
+            # std = gain / sqrt(fan_in)
+
+        # # 4. 计算均匀分布的边界
+        # bound = math.sqrt(3.0) * std
+        # # bound = sqrt(3) * 0.408 / sqrt(gating_dim)
+        # # bound ≈ 0.707 / sqrt(gating_dim)
+
+        # # 5. 从 U(-bound, bound) 采样
+        # weight ~ Uniform(-bound, bound)
+        #问题2：每个专家的画像向量被均匀、随机地洒在隐藏空间的不同方向上。是如何做到的。
+        
+
+
 
     def forward(self, hidden_states):
         bsz, seq_len, h = hidden_states.shape
