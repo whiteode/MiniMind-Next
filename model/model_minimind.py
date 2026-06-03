@@ -1442,7 +1442,20 @@ class MoEGate(nn.Module):
         #     return [exp_i / sum_exps for exp_i in exps]
 
 
-        self.alpha = config.aux_loss_alpha           # 辅助损失系数
+        # =========================================================================
+        # MoE 辅助损失系数 (Auxiliary Loss Alpha)
+        # =========================================================================
+        # 1. 作用：控制辅助损失在总损失中的权重，用于平衡“语言模型准确率”与“专家负载均衡”。
+        #
+        # 2. 为什么需要 Auxiliary Loss？
+        #    在混合专家模型（MoE）中，门控网络（Router）容易出现“赢者通吃”的现象（即某些专家
+        #    被频繁调用，而其他专家被闲置）。辅助损失通过惩罚这种不均衡，强迫门控网络将 Token
+        #    均匀地分配给各个专家，防止模型退化并提高并行计算效率。
+        #
+        # 3. 总损失计算公式：
+        #    Total Loss = Language Modeling Loss (如交叉熵) + alpha * Auxiliary Loss
+        # =========================================================================
+        self.alpha = config.aux_loss_alpha
         #MoE 的训练总损失是由两部分相加而来的：Total Loss = Language Modeling Loss (如交叉熵) + alpha * Auxiliary Loss
         self.seq_aux = config.seq_aux
         #它是一个布尔值（True 或 False），用来决定辅助损失（Auxiliary Loss）是在“单条序列（Sequence）”级别计算，还是在“整个批次（Batch）”级别计算。
@@ -1457,6 +1470,11 @@ class MoEGate(nn.Module):
         #矩阵的每一行，都是一个长度为 hidden_size 的特征向量。
         #第 i 行向量，就是第 i 个专家的“专业画像（关键词）”。
         #当前向传播执行 F.linear(hidden_states, self.weight) 时，本质上是把 Token 的向量与这 N 个专家的画像逐一做内积（点乘）。方向越一致、内积越大的专家，得分就越高。
+
+        # F.linear(hidden_states, self.weight) 表示执行一次线性变换（Linear Transformation），也就是我们常说的全连接层（Fully Connected Layer）或仿射变换的前向传播计算。
+
+        # 简单来说，它的核心数学本质就是矩阵乘法。
+
         # def demo_moe_gate_example():
         #     # 1. 模拟配置：假设有 3 个专家，特征维度为 2，每个 Token 激活 2 个专家
         #     n_routed_experts = 3
@@ -1548,20 +1566,24 @@ class MoEGate(nn.Module):
         #         denom = topk_weight[i].sum() + 1e-20
         #         norm_w = topk_weight[i] / denom
         #         print(f"  -> 归一化后的最终加权系数: {norm_w.tolist()}\n")
+        #     此时每个 Token 都有了自己独特的专家分布，模型可以根据这些分布将不同的 Token 路由到不同的专家进行处理，实现了真正意义上的“混合专家”机制。
 
         self.reset_parameters()#Kaiming 均匀初始化（何恺明初始化）
 
     def reset_parameters(self) -> None:
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
         #方差自适应：它会根据输入的维度（gating_dim）自动计算出最合适的随机值范围。输入维度越宽，初始化的随机值就越收敛、越小。打破对称，鼓励探索：在训练第一步，每个专家的画像向量被均匀、随机地洒在隐藏空间的不同方向上。这种“均匀分布”给予了每个专家在起跑线上完全公平的竞争机会，极大地协助了 Router 在训练初期去大胆探索不同专家的独特技能方向，从根本上缓解了后续发生“路由崩溃”的概率。
-        #问题1：如何根据输入的维度（gating_dim）自动计算出最合适的随机值范围
+        # 问题1：如何根据输入的维度（gating_dim）自动计算出最合适的随机值范围
         # # 1. 计算 fan_in（输入维度）
-        # fan_in = self.weight.size(1)  # 即 gating_dim
+        # fan_in = self.weight.size(1)  # 即 gating_dim，含义是每个专家画像向量的维度大小
+        # # 例如：如果 gating_dim 是 2048，那么 fan_in 就是 2048。
+        # 这个值直接决定了我们在初始化权重时应该使用多大的随机值范围，以确保输入信号在穿过这个线性层后，输出的能量（方差）保持稳定，不会爆炸或消失。
 
         # # 2. 计算增益（gain）
         # gain = math.sqrt(2.0 / (1 + a**2))  # a=math.sqrt(5)
         # # 对于 a=sqrt(5)，gain ≈ 0.408
         # 既然激活函数要砍掉一部分能量，那我们就在初始化权重矩阵时，根据激活函数的特性，提前乘上一个修正系数。这个系数就叫 gain（增益）。
+        # 为什么激活函数会砍掉能量？以 LeakyReLU 为例，负半轴的输入会被缩放 a 倍（a 是 LeakyReLU 的负斜率），这部分能量就变成了原来的 a² 倍。为了补偿这个损失，我们需要在初始化权重时乘以 gain，使得整体的能量保持在 1.0 附近。
         # 这个公式是针对 LeakyReLU 激活函数量身定制的。
         # def leaky_relu(x, alpha=0.01):
         #     """LeakyReLU 激活函数 - 简洁版本"""
@@ -1582,13 +1604,23 @@ class MoEGate(nn.Module):
         #                   = 0.5 + 0.5 × a²
         #                   = (1 + a²) / 2
         #
-        # 为了在初始化时将能量补回1.0，需要给权重矩阵乘以一个补偿系数（gain）
-        # 由于我们控制的是标准差（std），而 std = sqrt(方差)
-        # 所以 gain = sqrt(1 / 残余方差) = sqrt(2.0 / (1 + a²))
+        # 即Var(leaky_relu(Logic)) = (1 + a²) / 2 * Var(Logic)
+        # 而Var(leaky_relu(Logic))是不一定等于1.0的，此时我们希望输出的方差是 1.0（能量守恒），所以需要在初始化权重时乘以一个特定数值fix_scale，使得：
+        # Var(Output) = fix_scale * Var(leaky_relu(Logic)) = Var(leaky_relu(Logic_new)) = 1
+        # 那么fix_scale * Var(leaky_relu(Logic)) = Var(leaky_relu(Logic) * fix_scale) = Var(leaky_relu(Logic_new))
+        # 则 Logic * sqrt(fix_scale) = Logic_new
+        # 在这里，当我们希望Var(leaky_relu(Logic)) = (1 + a²) / 2 * Var(Logic) = 1.0时，fix_scale 就应该是 2.0 / (1 + a²)。
+        # 那么我们设置 gain = sqrt(fix_scale) = sqrt(2.0 / (1 + a²))，则Logic_new = Logic * gain，最终输出的方差就能保持在 1.0 附近，实现了能量守恒。
+
 
         # # 3. 计算标准差
         # std = gain / math.sqrt(fan_in)
         # 因为输入矩阵乘法时，信号是由 fan_in（输入维度）个不同的通道累加出来的。为了防止这成千上万个通道的数据加在一起导致能量爆炸，每个通道的权重必须平摊这部分能量，因此要除以 sqrt{fan_in}。
+        # 为什么要除以 sqrt{fan_in}而不是 fan_in？这是因为我们控制的是标准差（std），而不是方差（variance）。根据方差的性质，独立变量相加时，方差是累加的；而标准差是方差的开根号，所以要除以 sqrt{fan_in} 来平摊能量。、
+
+
+        # 可以从以下原理来说明:
+
             # 1. 拆解矩阵乘法的"大乱斗"
             # 我们在前面学过，Token 向量进入 Router 后，会与专家的画像做内积（点乘）。
             # 假设输入的 Token 向量是 X = [x_1, x_2, ..., x_n]，某个专家的画像权重是 W = [w_1, w_2, ..., w_n]。
@@ -1610,12 +1642,12 @@ class MoEGate(nn.Module):
             # 3. 为了"能量守恒"，反向推导 Var(w)
             # 何恺明初始化的根本追求，是让信号穿过这一层矩阵乘法后，输出的能量和输入的能量保持一致（即维持在 1.0 附近）。
             # 同时，上一问我们讲到，激活函数会损耗能量，所以需要引入 gain（在方差层面上就是 gain^2）来进行提前放大补偿。
-            # 因此，我们希望矩阵乘法计算完后的理想方差是：
-            # Var(Logit) = gain^2
-            # 现在，我们把这个理想目标，代入上面的累加公式里：
-            # fan_in * Var(w) = gain^2
-            # 求权重 W 应该具备的初始方差 Var(w)：
+            # 数据流动为x -> Linear Layer (权重 W) -> Logit -> 激活函数 -> Output
+            # Var(Logit) = n * Var(w)（这是线性层输出的方差）
+            # Var(Output) = Var(leaky_relu(Logit)) = gain^-2 * Var(Logit))（这是激活函数对能量的影响）
+            # Var(Output) = gain^-2 * fan_in * Var(w) = 1
             # Var(w) = gain^2 / fan_in
+
 
             # 4. 顿悟：从方差（Variance）到标准差（Std）
             # 我们在写代码或用标准正态/均匀分布进行采样时，控制的物理量是标准差（std），而不是方差。
@@ -1642,6 +1674,7 @@ class MoEGate(nn.Module):
         #     bound = 1.0 / np.sqrt(gating_dim)
         #     # 形状为 [5, 1024]，每一行代表一个专家
         #     expert_weights = np.random.uniform(-bound, bound, size=(num_experts, gating_dim))
+        #     它会在 [-bound, bound] 这个区间的正负对称范围内，等概率地抽取随机数
             
         #     # ----------------------------------------------------
         #     # 计算余弦相似度（检查它们是不是“几乎垂直”）
@@ -1649,6 +1682,8 @@ class MoEGate(nn.Module):
         #     # 1. 先对每个专家向量进行归一化（L2 Norm），让它们的模长变成 1
         #     # 这样它们就全部落在了“超球面”的表面上
         #     norms = np.linalg.norm(expert_weights, axis=1, keepdims=True)
+        #     np.linalg.norm(..., axis=1)：顺着横轴（axis=1）计算每个专家向量的几何长度（欧氏距离/L2 范数）。也就是把每个专家内部所有维度的数值求平方和，再开根号。
+        #       keepdims=True：保持矩阵的维度不丢失。如果原本专家权重是 (4, 512)（4个专家，512维），计算出的模长形状依然是 (4, 1)，方便后面做矩阵除法。
         #     normalized_experts = expert_weights / norms
             
         #     # 2. 通过矩阵乘法（点积）计算两两之间的余弦相似度
@@ -1662,7 +1697,7 @@ class MoEGate(nn.Module):
         #         for j in range(i + 1, num_experts):
         #             sim = cos_sim_matrix[i, j]
         #             # 计算夹角（角度制）
-        #             angle = np.degrees(np.arccos(np.clip(sim, -1.0, 1.0)))
+        #             angle = np.degrees(np.arccos(np.clip(sim, -1.0, 1.0)))#从余弦相似度计算夹角，np.clip 是为了防止数值误差导致的 arccos 输入超出 [-1, 1] 的范围
         #             print(f"专家 {i} 和 专家 {j} 的余弦相似度: {sim:7.4f} | 夹角: {angle:6.2f}°")
         # 核心数学原因：正负抵消的"概率大数定律"
         #
@@ -1671,11 +1706,130 @@ class MoEGate(nn.Module):
         #
         # 它们点积的数学公式展开是这样的：
         # A · B = (A_1 × B_1) + (A_2 × B_2) + (A_3 × B_3) + ... + (A_{1024} × B_{1024})
-        #
         # 每一项（比如 A_i × B_i）的结果会怎样？
         # 因为 A_i 和 B_i 都是在正负对称的区间 [-bound, bound] 里随机选的。
         # 那么 A_i × B_i 的结果，有 50% 的概率是正数（同号相乘），有 50% 的概率是负数（异号相乘）。
         # 并且，这个相乘结果的数学期望（平均值）是完美的 0。
+        # ====================================================================
+        # 为什么 E(A_i × B_i) 的数学期望是完美的 0？（公式推导）
+        # ====================================================================
+        # 1. 前提条件：相互独立性 (Independence)
+        # --------------------------------------------------------------------
+        # 在大模型参数初始化或随机向量生成时，A_i 和 B_i 是相互独立的随机变量。
+        # 也就是说，A_i 取什么值，完全不会影响 B_i 取什么值。
+        # 
+        # 根据概率论基本定理，若 X 与 Y 相互独立，则它们乘积的期望等于各自期望的乘积：
+        # 公式： E(X × Y) = E(X) × E(Y)
+        # 
+        # 因此，我们可以把 A_i × B_i 的期望拆解为：
+        # 公式： E(A_i × B_i) = E(A_i) × E(B_i)
+
+        # 2. 核心关键：单个变量的期望 E(A_i) 和 E(B_i) 为 0
+        # --------------------------------------------------------------------
+        # 既然 A_i 和 B_i 都是在正负对称的区间 [-bound, bound] 里随机挑选的：
+        # 
+        # 以最常见的连续均匀分布 (Uniform Distribution) 为例：
+        # 公式： E(A_i) = ∫_{-bound}^{bound} x · f(x) dx
+        # 
+        # 因为概率密度函数 f(x) 是均匀对称的，根据定积分的对称性（或算术平均值）：
+        # 公式： E(A_i) = (-bound + bound) / 2 = 0
+            # ====================================================================
+            # 为什么连续均匀分布下，单个变量的期望 E(A_i) 是完美的 0？
+            # ====================================================================
+
+            # 1. 物理直觉：寻找“跷跷板”的平衡点（重心）
+            # --------------------------------------------------------------------
+            # 在概率论中，“期望值 (Expectation)”的物理本质就是概率分布图形的“重心”。
+            # 
+            # 想象在正负对称的区间 [-bound, bound]（例如 [-5, 5]）上放一块厚度均匀的木板：
+            # 
+            #          木板（均匀分布的概率密度）
+            #     ┌───────────────────────┐
+            #     │                       │
+            # ────┴───────────┬───────────┴────►
+            #    -5           0           5  (X轴)
+            #                 ▲
+            #              (平衡点)
+            # 
+            # 如果要在木板下放一个三角形支点使其完美平衡，这个支点必须放在正中间的 0 点。
+            # 这个平衡点对应的数值 0，就是数学上的期望值。
+
+            # 2. 几何图形：正负面积的“完美抵消”
+            # --------------------------------------------------------------------
+            # 回看连续型随机变量的期望公式：
+            # 公式： E(A_i) = ∫_{-bound}^{bound} x · f(x) dx
+            # 
+            # 其中的积分符号 ∫ 本质上就是“求面积”。
+            # 而被积函数 x · f(x) 在坐标轴上画出来，是一条穿过原点的斜线（奇函数）：
+            # 
+            #        ▲ Y轴 [x · f(x)]
+            #        │     /
+            #        │    /  区域②：X为正，函数值为正
+            #        │   /   形成【正面积】(+)
+            # ───────┼──/────► X轴
+            #       /│ /bound
+            #      / │/
+            #     /  │ -bound
+            #    /   │ 区域①：X为负，函数值为负
+            #   /    │ 形成【负面积】(-)
+            # 
+            # - 在 [0, bound] 的正数区域（右边）：x > 0，图形在 X 轴上方，属于正面积 (+)。
+            # - 在 [-bound, 0] 的负数区域（左边）：x < 0，图形在 X 轴下方，属于负面积 (-)。
+            # 
+            # 因为区间 [-bound, bound] 关于原点完全对称，左边的负面积与右边的正面积形状完全相同。
+            # 当积分从最左端一路累加到最右端时：
+            # 公式： 总面积 = (右边的正面积) + (左边的负面积) = 0
+            # 
+            # 因此，积分结果（即期望值）必然为 0。
+
+            # 3. 离散算术平均视角（最直观的理解）
+            # --------------------------------------------------------------------
+            # 如果将连续区间简化为一个个孤立的、对称的数字，结论显而易见。
+            # 假设在 [-5, 5] 之间均匀、对称地挑出 11 个整数：
+            # 数字集合：{-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5}
+            # 
+            # 既然是“均匀分布”，说明每个数字被挑中的概率完全相同。
+            # 计算它们的算术平均值（期望）：
+            # 公式： Avg = [(-5 + 5) + (-4 + 4) + (-3 + 3) + (-2 + 2) + (-1 + 1) + 0] / 11
+            #            = 0 / 11
+            #            = 0
+            # 
+            # 结论：左边的负数和右边的正数两两配对，在求和时彻底抵消，最终均值（期望）为 0。
+
+        # 
+        # 同理，B_i 也是在同样的对称区间里独立随机生成的，所以：
+        # 公式： E(B_i) = 0
+
+        # 3. 最终合体：
+        # --------------------------------------------------------------------
+        # 将单项期望值代回乘积期望公式：
+        # 在概率论中，这是一个非常著名的定理：
+        # 当两个随机变量 X 和 Y 相互独立（Independence）时，它们乘积的期望等于各自期望的乘积。
+        # 公式： E(X × Y) = E(X) × E(Y)
+        # 公式： E(A_i × B_i) = E(A_i) × E(B_i)
+        #                     = 0 × 0
+        #                     = 0
+        # 
+        # 结论：因此，每一项 (A_i × B_i) 的数学期望是完美的 0。
+
+        # 4. 离散符号视角下的直观验证 (50% 正, 50% 负)
+        # --------------------------------------------------------------------
+        # 假设已经确定了绝对值 |A_i| 和 |B_i|，由于正负号是随机且独立的，
+        # 它们的符号组合共有 4 种可能，且每种情况发生的概率都是 25%：
+        # 
+        # [A_i, B_i] 符号组合 ->  乘积符号  ->  概率
+        #  [ + ,  + ]        ->    +     ->  25% (0.25)
+        #  [ - ,  - ]        ->    +     ->  25% (0.25)  => 合计 50% 概率为正数
+        #  [ + ,  - ]        ->    -     ->  25% (0.25)
+        #  [ - ,  + ]        ->    -     ->  25% (0.25)  => 合计 50% 概率为负数
+        # 
+        # 代入离散型随机变量的期望公式 E(X) = ∑ x_k · p_k：
+        # 公式： E(A_i × B_i) = 0.25 × (+|A_i||B_i|) + 0.25 × (+|A_i||B_i|) 
+        #                     + 0.25 × (-|A_i||B_i|) + 0.25 × (-|A_i||B_i|)
+        #                     = 0.5 × (|A_i||B_i|) - 0.5 × (|A_i||B_i|)
+        #                     = 0
+        # 
+        # 结论：正负两股力量在概率上完全对称，在求和（计算期望）时完美抵消。
         #
         # 维度的力量（相加的项数越多，奇迹越明显）：
         # 如果只有 2 个维度：这就好比抛 2 次硬币。你连续抛出两个正面（正数相加，结果很大）的概率是 25%。所以低维空间里，向量很容易产生很大的正相关或负相关。
@@ -1687,48 +1841,116 @@ class MoEGate(nn.Module):
 
 
     def forward(self, hidden_states):
-        bsz, seq_len, h = hidden_states.shape
-        hidden_states = hidden_states.view(-1, h)
+        bsz, seq_len, h = hidden_states.shape # hidden_states 形状: [batch_size, seq_len, hidden_size]
+        hidden_states = hidden_states.view(-1, h) # 将输入展平为 [batch_size * seq_len, hidden_size]，方便后续矩阵乘法计算每个 token 的专家分数
         
         # 计算每个 token 在各个专家上的 logits
-        logits = F.linear(hidden_states, self.weight, None)
+        logits = F.linear(hidden_states, self.weight, None) # 形状: [batch_size * seq_len, n_experts]
         if self.scoring_func == 'softmax':
-            scores = logits.softmax(dim=-1)
+            scores = logits.softmax(dim=-1) # 形状: [batch_size * seq_len, n_experts]，每行是一个 token 在所有专家上的概率分布
         else:
             raise NotImplementedError(f'insupportable scoring function for MoE gating: {self.scoring_func}')
 
         # 选出分数最高的 top_k 个专家及其权重索引
-        topk_weight, topk_idx = torch.topk(scores, k=self.top_k, dim=-1, sorted=False)
+        topk_weight, topk_idx = torch.topk(scores, k=self.top_k, dim=-1, sorted=False) # 形状: [batch_size * seq_len, top_k]
+        #torch.topk(scores, k=self.top_k, dim=-1, sorted=False)的语法规则是：
+        # scores: 输入的张量，形状为 [batch_size * seq_len, n_experts]。
+        # k: 需要选取的元素数量，这里是 top_k。
+        # dim: 指定在哪个维度上进行 top-k 操作，这里是 -1，表示最后一个维度（专家维度）。
+        # sorted: 是否对选取的 top-k 元素进行排序，默认为 True。如果设置为 False，则返回的 top-k 元素的顺序与它们在原始输入中的顺序相同，而不是按值排序。
+        # 返回值 topk_weight 是选中的 top-k 专家的分数（权重），形状为 [batch_size * seq_len, top_k]；topk_idx 是选中的 top-k 专家的索引，形状也是 [batch_size * seq_len, top_k]。
 
         # 归一化 Top-K 的分数，确保它们相加为 1
         if self.top_k > 1 and self.norm_topk_prob:
             denominator = topk_weight.sum(dim=-1, keepdim=True) + 1e-20
             topk_weight = topk_weight / denominator
 
-        # 计算辅助损失 (Auxiliary Loss) 防止路由崩溃 (Expert Collapse, 比如所有的 token 都堆在某一个专家上)
+        # ========== 计算辅助损失 (Auxiliary Loss) ==========
+        # 目的：防止路由崩溃 (Router Collapse)，即所有 token 都被分配给少数几个"明星专家"，导致其他专家闲置
+        # 原理：通过惩罚负载不均衡，强制门控网络将 token 均匀地分配给所有专家
+        # 公式：Total Loss = Language Modeling Loss + α × Auxiliary Loss
+        # 其中 α (self.alpha) 是辅助损失的权重系数，通常设置为 0.01 左右
         if self.training and self.alpha > 0.0:
-            scores_for_aux = scores
-            aux_topk = self.top_k
+            scores_for_aux = scores  # 所有专家的门控分数 (softmax 后的概率分布)
+            aux_topk = self.top_k     # Top-K 专家数量
+            # 将选中的专家索引展平为 [batch_size, seq_len * top_k] 形状
+            # 例如：batch=2, seq_len=10, top_k=2 -> [2, 20]
             topk_idx_for_aux_loss = topk_idx.view(bsz, -1)
             
             if self.seq_aux:
-                # 序列级辅助损失计算 (更精细化控制一条序列内部的负载均衡)
+                # ---------- 模式 1：序列级辅助损失 (Sequence-level Auxiliary Loss) ----------
+                # 适用场景：长序列任务，需要在每条序列内部单独进行负载均衡
+                # 优势：避免不同序列之间的专家偏好相互干扰，更精细化控制
+
+                # 步骤 1：重塑 scores 为 [batch_size, seq_len, n_experts]
+                # 这样可以对每条序列的每个 token 的门控分数进行独立统计
                 scores_for_seq_aux = scores_for_aux.view(bsz, seq_len, -1)
+
+                # 步骤 2：统计每个专家在每条序列中被选中的次数，并归一化
+                # ce 形状: [batch_size, n_routed_experts]
+                # ce[i, j] 表示在第 i 条序列中，专家 j 被选中的归一化频率
                 ce = torch.zeros(bsz, self.n_routed_experts, device=hidden_states.device)
+                # scatter_add_: 将选中的专家位置累加 1（统计被选中次数）
+                # topk_idx_for_aux_loss 形状: [batch_size, seq_len * top_k]
                 ce.scatter_add_(1, topk_idx_for_aux_loss,
                                 torch.ones(bsz, seq_len * aux_topk, device=hidden_states.device)).div_(
                     seq_len * aux_topk / self.n_routed_experts)
+                # div_: 归一化，理想情况下每个专家应该被选中 (seq_len * top_k / n_experts) 次
+                # 归一化后，ce 的期望值为 1.0（表示负载均衡）
+
+                # 步骤 3：计算辅助损失
+                # scores_for_seq_aux.mean(dim=1): 对序列维度求平均，得到每条序列中每个专家的平均门控概率
+                # 形状: [batch_size, n_experts]
+                # ce * scores_for_seq_aux.mean(dim=1): 实际负载 × 门控概率
+                # 当某专家被过度使用（ce 大）且门控分数也高时，乘积大，损失大
+                # sum(dim=1): 对专家维度求和，得到每条序列的损失 [batch_size]
+                # mean(): 对 batch 维度求平均，得到标量损失
+                # * self.alpha: 乘以权重系数，控制辅助损失在总损失中的占比
                 aux_loss = (ce * scores_for_seq_aux.mean(dim=1)).sum(dim=1).mean() * self.alpha
             else:
-                # 批次级辅助损失 (传统 MoE 做法)
+                # ---------- 模式 2：批次级辅助损失 (Batch-level Auxiliary Loss) ----------
+                # 适用场景：标准 MoE 训练，在整个 batch 上统计负载均衡
+                # 这是最经典的实现方式，来自 Google 的 Switch Transformer 论文
+                # 损失公式：aux_loss = α × Σ(Pᵢ × fᵢ)，其中 i 遍历所有专家
+
+                # 步骤 1：将选中的专家索引转换为 one-hot 编码
+                # topk_idx_for_aux_loss.view(-1): 展平为 [batch_size * seq_len * top_k]
+                # F.one_hot: 转换为 one-hot，形状 [batch_size * seq_len * top_k, n_routed_experts]
+                # 例如：如果某个位置选中专家 2，则该行为 [0, 0, 1, 0, ..., 0]
                 mask_ce = F.one_hot(topk_idx_for_aux_loss.view(-1), num_classes=self.n_routed_experts)
+
+                # 步骤 2：计算 fᵢ（专家 i 的实际选中频率）
+                # ce: 对所有 token 求平均，得到每个专家被选中的比例
+                # 形状: [n_routed_experts]
+                # 例如：ce[2] = 0.15 表示专家 2 被选中了 15% 的次数
                 ce = mask_ce.float().mean(0)
+
+                # 步骤 3：计算 Pᵢ（专家 i 的平均门控概率/重要性分数）
+                # scores_for_aux: 所有 token 对所有专家的 softmax 概率
+                # Pi.mean(0): 对所有 token 求平均，得到每个专家的平均门控分数
+                # 形状: [n_routed_experts]
+                # 例如：Pi[2] = 0.12 表示所有 token 平均给专家 2 打了 12% 的概率
                 Pi = scores_for_aux.mean(0)
+
+                # 步骤 4：计算归一化的负载因子 fᵢ
+                # 乘以 n_routed_experts 进行归一化
+                # 如果负载完全均衡，每个专家的 fi 应该等于 1.0
+                # fi > 1 表示该专家过载，fi < 1 表示该专家闲置
                 fi = ce * self.n_routed_experts
+
+                # 步骤 5：计算最终的辅助损失
+                # (Pi * fi).sum(): 对所有专家求和 Σ(Pᵢ × fᵢ)
+                # 关键思想：
+                #   - 如果专家 i 既被频繁选中（fi 大）又获得高门控分数（Pi 大），乘积大，损失大
+                #   - 这会惩罚"强者恒强"的马太效应，迫使门控网络探索其他专家
+                # * self.alpha: 乘以权重系数（如 0.01），避免辅助损失主导总损失
                 aux_loss = (Pi * fi).sum() * self.alpha
         else:
+            # 不计算辅助损失的情况：
+            # 1. 推理模式 (not self.training)：推理时不需要优化负载均衡，直接返回 0
+            # 2. 辅助损失系数为 0 (self.alpha <= 0.0)：用户关闭了辅助损失功能
             aux_loss = scores.new_zeros(1).squeeze()
-            
+
         return topk_idx, topk_weight, aux_loss
 
 
