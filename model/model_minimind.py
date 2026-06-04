@@ -1158,23 +1158,212 @@ def precompute_freqs_cis(dim: int, end: int = int(32 * 1024), rope_base: float =
             rope_scaling.get("beta_slow", 1.0), 
             rope_scaling.get("attention_factor", 1.0)
         )
-        if end / orig_max > 1.0:#只有当当前需要的上下文长度超出了模型原生的最大长度时（即需要进行上下文扩展时），才触发 YaRN 算法。
-            # YaRN 算法核心逻辑: f'(i) = f(i)((1-γ) + γ/s)
-            # 对高频部分不缩放，对低频部分进行线性缩放，中间部分进行过渡
-            inv_dim = lambda b: (dim * math.log(orig_max / (b * 2 * math.pi))) / (2 * math.log(rope_base))# 计算逆维度，即将频率映射到维度上
-            low, high = max(math.floor(inv_dim(beta_fast)), 0), min(math.ceil(inv_dim(beta_slow)), dim // 2 - 1)#算了两个关键的维度边界 low 和 high
-            # 计算斜坡函数 (Ramp function) 以实现平滑过渡
+        # 1. 触发条件检查
+        # end (8192) / orig_max (4096) = 2.0 > 1.0，条件成立，进入 YaRN 逻辑
+        if end / orig_max > 1.0:
+
+            # 2. 定义逆维度函数 inv_dim
+            # 它的物理意义：RoPE 中，越靠前的维度频率越高，越靠后的维度频率越低。
+            # 这个 lambda 函数输入一个波长边界（beta），就能算出这个波长对应在 0 ~ (dim//2 - 1) 的哪个维度上。
+
+            # ==============================================================================
+            # 数学推导：为什么代码里的 inv_dim 公式长成这样？
+            # ==============================================================================
+            #
+            # 我们的目标：找出哪一个维度索引 i 的“Token级波长”，正好等于设定的临界波长。
+            #
+            # ------------------------------------------------------------------------------
+            # 1. 核心物理物理量定义：
+            # ------------------------------------------------------------------------------
+            # - orig_max: 模型原生的最大上下文长度（例如 4096）
+            # - b:        临界控制算子（即传入的 beta_fast 或 beta_slow）
+            # - dim:      RoPE 的总特征维度
+            # - rope_base: 基数（通常为 10000）
+            # - i:        我们需要求解的维度索引号
+            #
+            # YaRN 论文定义临界点时，衡量的是“波长相对于模型原生最大长度的倍数关系”。
+            # 论文设定的临界波长方程为：
+            #
+            #   波长 λ(i) = orig_max / b
+            #
+            # ------------------------------------------------------------------------------
+            # 2. 代入 RoPE 的波长公式：
+            # ------------------------------------------------------------------------------
+            # 已知在标准 RoPE 中，第 i 个维度的绝对波长公式为：
+            #   λ(i) = 2 * pi * (rope_base ** (2 * i / dim))
+            # 关于这个公式是如何得来的：频率 f(i) 的基础物理定义是f(i) = 1 / (rope_base ** (2 * i / dim))，即Token 绝对位置每增加 1（距离+1），该维度在复数空间中旋转的【弧度数】
+            # 波长 λ(i) 的严格物理定义是：【旋转满一整圈（一个完整周期）所需要的 Token 数量】。既然 RoPE 的底层是通过三角函数 sin(θ) 和 cos(θ) 来实现二维矩阵旋转的，那么在圆周几何中，【一整圈】的弧度绝对不是 1，而是固定的 2 * pi (即 360 度)。我们建立物理方程。假设转满一圈需要经过 λ(i) 个 Token 距离：经过的距离 * 每次走的弧度 = 满圈总弧度.λ(i) * f(i) = 2 * pi。则能得到 λ(i) = 2 * pi / f(i) = 2 * pi * (rope_base ** (2 * i / dim))。
+            # 将其代入上面的临界方程，得到初始等式：
+            #   2 * pi * (rope_base ** (2 * i / dim)) = orig_max / b
+            #
+            # ------------------------------------------------------------------------------
+            # 3. 详细分步解方程（目标：孤立变量 i）
+            # ------------------------------------------------------------------------------
+            # 
+            # 步骤 A: 两边同时除以 (2 * pi)，将指数项留在左边：
+            #   rope_base ** (2 * i / dim) = orig_max / (b * 2 * pi)
+            #
+            # 步骤 B: 两边同时取自然对数 (ln / math.log)，消除底数的指数：
+            #   (2 * i / dim) * ln(rope_base) = ln( orig_max / (b * 2 * pi) )
+            #
+            # 步骤 C: 两边同时乘以 dim，消除左边的分母：
+            #   2 * i * ln(rope_base) = dim * ln( orig_max / (b * 2 * pi) )
+            #
+            # 步骤 D: 两边同时除以 (2 * ln(rope_base))，彻底孤立 i：
+            #   i = (dim * ln( orig_max / (b * 2 * pi) )) / (2 * ln(rope_base))
+            #
+            # ------------------------------------------------------------------------------
+            # 4. 最终对照结果
+            # ------------------------------------------------------------------------------
+            # 观察上面最终解出的 i 表达式，将其直接转写为 Python 的 math 代码：
+            #   i = (dim * math.log(orig_max / (b * 2 * math.pi))) / (2 * math.log(rope_base))
+            #
+            # 这与代码中的 lambda 表达式完全一模一样！
+            # ==============================================================================
+            inv_dim = lambda b: (dim * math.log(orig_max / (b * 2 * math.pi))) / (2 * math.log(rope_base))
+            # 传入 beta_fast（通常设为 32）时，算出的是高频截断点 low。传入 beta_slow（通常设为 1）时，算出的是低频截断点 high。
+
+
+
+            # 3. 计算切分高频、中频、低频的两个维度边界：low 和 high
+            # 论文中通过 beta_fast 和 beta_slow 算出的物理边界，代入 inv_dim 转换为维度索引。
+            #
+            # 假设经计算：
+            #   low  = 1  (意味着：维度 0 到 1 属于高频区，不需要缩放)
+            #   high = 3  (意味着：维度 3 之后属于低频区，需要完全缩放；而 1 到 3 之间是过渡区)
+            low, high = max(math.floor(inv_dim(beta_fast)), 0), min(math.ceil(inv_dim(beta_slow)), dim // 2 - 1)
+
+            # 4. 生成斜坡函数 (Ramp function) 以实现平滑过渡
+            # --------------------------------------------------------------------------
+            # 步骤 A: torch.arange(dim // 2) 生成基础维度索引
+            #         -> tensor([0., 1., 2., 3.])
+            #
+            # 步骤 B: 减去 low (1)
+            #         -> tensor([-1., 0., 1., 2.])
+            #
+            # 步骤 C: 除以 (high - low)，即 (3 - 1 = 2)
+            #         -> tensor([-0.5, 0.0, 0.5, 1.0])
+            #
+            # 步骤 D: torch.clamp(..., 0, 1) 裁剪到 0 和 1 之间
+            #         -> ramp = tensor([0.0, 0.0, 0.5, 1.0])
+            # --------------------------------------------------------------------------
+            # 此时 ramp 的物理意义（即公式中的 γ 因子）：
+            # 维度 0: ramp=0.0 -> 纯高频，完全不缩放
+            # 维度 1: ramp=0.0 -> 纯高频，完全不缩放
+            # 维度 2: ramp=0.5 -> 中频过渡带，混合缩放
+            # 维度 3: ramp=1.0 -> 纯低频，完全线性缩放
             ramp = torch.clamp((torch.arange(dim // 2, device=freqs.device).float() - low) / max(high - low, 0.001), 0, 1)
-            #这里生成了一个长度为 dim // 2 的向量，代表每个维度对应的过渡因子 $\gamma$。
-            freqs = freqs * (1 - ramp + ramp / factor)#这里的 factor ($s$) 是上下文扩展的倍数（例如要将 4k 扩展到 16k，factor = 4）。代码通过加权平均巧妙地一次性对所有维度完成了分段处理
+
+            # 5. 核心魔法：利用加权平均一次性完成分段缩放
+            # --------------------------------------------------------------------------
+            # 依据公式：f'(i) = f(i) * (1 - ramp + ramp / factor)
+            # 
+            # 我们先单独看缩放系数：scale_coef = (1 - ramp + ramp / factor)
+            # 已知 factor = 2.0，则 1 / factor = 0.5
+            #
+            # 维度 0 (ramp=0.0): 1 - 0.0 + 0.0 * 0.5 = 1.0  (不缩放，保持原样！)
+            # 维度 1 (ramp=0.0): 1 - 0.0 + 0.0 * 0.5 = 1.0  (不缩放，保持原样！)
+            # 维度 2 (ramp=0.5): 1 - 0.5 + 0.5 * 0.5 = 0.75 (平滑缩放 0.75 倍)
+            # 维度 3 (ramp=1.0): 1 - 1.0 + 1.0 * 0.5 = 0.5  (完全缩放，即 1/factor)
+            #
+            # 计算得到的系数矩阵为：tensor([1.0, 1.0, 0.75, 0.5])
+            # --------------------------------------------------------------------------
+            # 最终将系数乘回原始频率 freqs = tensor([1.0, 0.5, 0.2, 0.1])
+            #
+            # freqs = [1.0 * 1.0,  0.5 * 1.0,  0.2 * 0.75,  0.1 * 0.5]
+            #       = tensor([1.0, 0.5, 0.15, 0.05])
+            freqs = freqs * (1 - ramp + ramp / factor)
+
+        # ==============================================================================
+        # 💡 结果分析
+        # ==============================================================================
+        # 缩放前的 freqs: tensor([1.0, 0.5,  0.2,  0.1])
+        # 缩放后的 freqs: tensor([1.0, 0.5, 0.15, 0.05])
+        # 
+        # 可以看到：
+        # - 前两个高频维度【完全没变】，保留了模型短期内关注精准位置的能力；
+        # - 最后一个低频维度【精准减半】，使模型能够接收比原生大 2 倍的外部长上下文；
+        # - 倒数第二个中频维度【平滑过渡】。这就是 YaRN 算法不伤模型外推性能的秘密。
 
     # 构造长度为 end 的位置索引 t
-    t = torch.arange(end, device=freqs.device)
+    t = torch.arange(end, device=freqs.device)#例：如果 end=8192，则 t 是一个从 0 到 8191 的整数序列，形状为 (8192,)。每个元素 t[i] 就代表了位置 i 的索引。这个位置索引将被用来计算每个位置对应的旋转角度（频率乘以位置），从而生成 RoPE 的正余弦编码。
     # 将位置 t 乘上预计算的频率，得到 (end, dim//2) 的矩阵
     freqs = torch.outer(t, freqs).float()
     # 将频率拼接以匹配 dim 维度，生成实部 (cos) 和虚部 (sin)
     freqs_cos = torch.cat([torch.cos(freqs), torch.cos(freqs)], dim=-1) * attn_factor
     freqs_sin = torch.cat([torch.sin(freqs), torch.sin(freqs)], dim=-1) * attn_factor#注意力缩放因子 (attn_factor) —— YaRN 的精髓
+    # ==============================================================================
+    # 为什么是用 `torch.cat` 拼接成 [cos0, cos1, cos0, cos1] 
+    # 而不是用 `repeat` 拼成 [cos0, cos0, cos1, cos1]？
+    # ==============================================================================
+    # 
+    # 设定物理背景：
+    # 我们有一个标准的 4 维 Token 特征向量 X = [x0, x1, x2, x3]。
+    # 假设频率向量 freqs 计算出两个角度：theta_0 (对应频率0) 和 theta_1 (对应频率1)。
+    # 
+    # 【RoPE 旋转位置编码的两个流派与内存对齐说明】
+    # 开源界对 X 内部“复数对”的划分，一直有两大门派：
+    # ==============================================================================
+
+    # ------------------------------------------------------------------------------
+    # 流派一：相邻结为夫妻（Interleaved 流派，如 GPT-NeoX）
+    # ------------------------------------------------------------------------------
+    # 核心思想：最直观的方法，让挨着的两个维度直接凑成一对。
+    # 配对结果：
+    #     - 夫妻 0：(x0, x1) -> 共享角度 theta_0
+    #     - 夫妻 1：(x2, x3) -> 共享角度 theta_1
+    # 
+    # 伴随特征构造：
+    #     相邻奇偶互换，并把奇数维变负：X_swap = [-x1, x0, -x3, x2]
+    #
+    # 内存排列要求：
+    #     既然 x0 和 x1 都要用 theta_0 的参数，它们在内存里的参数就必须是挨着的。
+    #     因此频率矩阵必须拼成：[cos0, cos0, cos1, cos1]。
+    #     (这在 PyTorch 里通常用 `torch.repeat_interleave(freqs, 2)` 实现)。
+    # ------------------------------------------------------------------------------
+
+    # ------------------------------------------------------------------------------
+    # 流派二：前后半分（Half-Splitting，LLaMA 官方源码经典玩法）—— 也就是本代码所用的逻辑！
+    # ------------------------------------------------------------------------------
+    # 核心思想：不让挨着的人在一起，而是把向量从中间一刀切，让前半段和后半段“跨海配对”。
+    #
+    # 一刀切开：
+    #     - 前半段：[x0, x1]
+    #     - 后半段：[x2, x3]
+    #
+    # 跨海配对结果：
+    #     - 夫妻 0：前半段的 x0 和后半段的 x2 凑成 (x0, x2) -> 对应角度 theta_0
+    #     - 夫妻 1：前半段的 x1 和后半段的 x3 凑成 (x1, x3) -> 对应角度 theta_1
+    #
+    # 伴随特征构造：
+    #     整个前半部分和后半部分大对调，后半段取负：X_swap = [-x2, -x3, x0, x1]
+    #
+    # 内存排列要求（见证奇迹的时刻！）：
+    #     此时看内存，前半段 [x0, x1] 分别属于夫妻0和夫妻1，它们需要的参数是 [cos0, cos1]。
+    #     后半段 [x2, x3] 也分别属于夫妻0和夫妻1，它们需要的参数也是 [cos0, cos1]。
+    #
+    #     为了满足 GPU 的“强迫症”——【绝不在旋转计算时用 for 循环，一发 Element-wise 乘法直接收工】，
+    #     我们的频率矩阵必须天衣无缝地拼成：
+    #     freqs_cos = [cos0, cos1, cos0, cos1]  <-- 这正是 `torch.cat([freqs, freqs])` 的杰作！
+    #
+    # 此时，GPU 直接执行一发并行的基础代数运算 (X * cos + X_swap * sin)：
+    #   第 0 维：x0 * cos0 + (-x2) * sin0  --> 完美实现 (x0, x2) 绕 theta_0 的旋转！
+    #   第 1 维：x1 * cos1 + (-x3) * sin1  --> 完美实现 (x1, x3) 绕 theta_1 的旋转！
+    # ==============================================================================
+    # 
+    # 总结：
+    # 这段代码使用 `torch.cat` 生成 `[cos0, cos1, cos0, cos1]`，
+    # 明确宣告了该模型在底层特征处理上采用了 LLaMA 经典的【前后半分跨海配对】流派.
+
+
+
+
+
+    # 什么是 attn_factor？为什么说它是 YaRN 的精髓？
+    # - 当我们把上下文长度硬生生拉长（比如从 4k 强行拉到 16k）并对频率进行缩放后，
+    #   神经网络中原本紧凑的注意力机制会被“冲淡”（Attention 熵增加，能量分散）。
+    # - YaRN 论文推导出了一个数学修正项（通过混淆度曲线严格计算得出），乘上这个 attn_factor（一个大于 1 的系数），
+    #   能够重新把被冲淡的注意力能量“聚拢/放大”回来，确保模型在超长文本下依然保持强大的敏锐度。
     #形状变为 (end, dim)。这使得它可以直接与形状为 (batch, head, seq, dim) 的 Query/Key 向量进行逐元素相乘
     return freqs_cos, freqs_sin
 
@@ -1382,7 +1571,65 @@ class FeedForward(nn.Module):
         if config.intermediate_size is None:
             intermediate_size = int(config.hidden_size * 8 / 3)
             config.intermediate_size = 64 * ((intermediate_size + 64 - 1) // 64)
-
+        # ==============================================================================
+        # 为什么中间维度（intermediate_size）默认是 hidden_size 的 8/3 倍？
+        # ==============================================================================
+        #
+        # 这背后的根本原因，是因为现代大语言模型（如 LLaMA、DeepSeek、Qwen 等）
+        # 将传统的 FFN（前馈神经网络）升级为了更高效的 SwiGLU 门控激活函数。
+        # LLaMA 的设计原则是：在更换激活函数时，保持 FFN 层的【总参数量和计算量】与传统设计一致。
+        #
+        # ------------------------------------------------------------------------------
+        # 对比 1：传统 FFN 结构（以 GPT-3 传统的 GELU/ReLU FFN 为例）
+        # ------------------------------------------------------------------------------
+        # 传统 FFN 只有 2 个线性层：
+        # 1. 升维层 (W1): [hidden_size, 4 * hidden_size]
+        # 2. 降维层 (W2): [4 * hidden_size, hidden_size]
+        #
+        # 公式: FFN(x) = GELU(x @ W1) @ W2
+        #
+        # 参数量计算 (假设 H = hidden_size):
+        #   W1 参数量 = H * 4H = 4H²
+        #   W2 参数量 = 4H * H = 4H²
+        #   总参数量  = 4H² + 4H² = 8H²
+        #
+        # ------------------------------------------------------------------------------
+        # 对比 2：SwiGLU FFN 结构（以 LLaMA、DeepSeek 为例）
+        # ------------------------------------------------------------------------------
+        # SwiGLU 采用门控机制，需要 3 个线性层来完成前向传播：
+        # 1. 门控层 (W_gate): [hidden_size, intermediate_size]
+        # 2. 升维层 (W_up):   [hidden_size, intermediate_size]
+        # 3. 降维层 (W_down): [intermediate_size, hidden_size]
+        #
+        # 公式: SwiGLU(x) = (Swish(x @ W_gate) * (x @ W_up)) @ W_down
+        #
+        # 参数量计算 (假设 I = intermediate_size):
+        #   W_gate 参数量 = H * I
+        #   W_up 参数量   = H * I
+        #   W_down 参数量 = I * H
+        #   总参数量      = HI + HI + HI = 3HI
+        #
+        # ------------------------------------------------------------------------------
+        # 数学推导：让两者参数量对齐
+        # ------------------------------------------------------------------------------
+        # 为了让 SwiGLU 的总参数量等于传统 FFN 的 8H²，我们列出方程：
+        #   3 * H * I = 8 * H²
+        # 
+        # 两边同时除以 3 * H，即可求出 I (intermediate_size)：
+        #   I = (8 / 3) * H
+        #
+        # 这就是 8 / 3 倍的由来！它完美地在引入门控机制的同时，锚定了模型的参数量与算力消耗。
+        #
+        # ------------------------------------------------------------------------------
+        # 关于“对齐至 64 的整数倍”
+        # ------------------------------------------------------------------------------
+        # 因为 (8 / 3) 经常会除不尽（例如 4096 * 8 / 3 = 10922.66...），
+        # 现代显卡（如 NVIDIA A100/H100）使用 Tensor Core 进行矩阵乘法加速时，
+        # 要求硬件维度的边界必须是 8/16/32/64 的整数倍（通常 64 性能达到最优）。
+        # 
+        # 代码中的：64 * ((intermediate_size + 64 - 1) // 64)
+        # 就是标准的向上取整对齐操作，确保硬件能够满载运行，避免因维度不合规导致算力下滑。
+        # ==============================================================================
             
         self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
@@ -1876,7 +2123,7 @@ class MoEGate(nn.Module):
             # 将选中的专家索引展平为 [batch_size, seq_len * top_k] 形状
             # 例如：batch=2, seq_len=10, top_k=2 -> [2, 20]
             topk_idx_for_aux_loss = topk_idx.view(bsz, -1)
-            
+            # 将 [batch_size, seq_len, top_k] 展平为 [batch_size, seq_len * top_k]，是去除了对计算 Loss 无用的“时序/位置”信息，把“每个词具体选了谁”转换成了“路由结果大集合”，从而极大地简化了后续统计专家负载比例和计算惩罚项的张量操作。
             if self.seq_aux:
                 # ---------- 模式 1：序列级辅助损失 (Sequence-level Auxiliary Loss) ----------
                 # 适用场景：长序列任务，需要在每条序列内部单独进行负载均衡
@@ -1891,6 +2138,66 @@ class MoEGate(nn.Module):
                 # ce[i, j] 表示在第 i 条序列中，专家 j 被选中的归一化频率
                 ce = torch.zeros(bsz, self.n_routed_experts, device=hidden_states.device)
                 # scatter_add_: 将选中的专家位置累加 1（统计被选中次数）
+                # 语法：tensor.scatter_add_(dim, index, src)，在指定维度 dim 上，根据 index 索引将 src 的值累加到 tensor 中。
+
+                    # # ==============================================================================
+                    # # 微型数据示例：讲解 ce.scatter_add_ 的执行过程
+                    # # ==============================================================================
+                    # # 假设模型参数如下：
+                    # # bsz (Batch Size) = 2           -> 当前批次有 2 句话
+                    # # seq_len = 3                    -> 每句话 3 个 Token
+                    # # aux_topk = 2                   -> 每个 Token 选 2 个专家
+                    # # n_experts = 4                  -> 模型总共有 4 个专家 (编号 0,1,2,3)
+                    # #
+                    # # 意味着：每句话总共会投出 seq_len * aux_topk = 6 张选票
+                    # # ==============================================================================
+
+                    # # 1. 目标张量 ce (计票箱)
+                    # # 形状: [bsz, n_experts] = [2, 4]
+                    # # 初始状态全为 0，每一列代表一个专家的得票数
+                    # # ce = tensor([
+                    # #     [0., 0., 0., 0.],  # Batch 0 的计票箱: [专家0, 专家1, 专家2, 专家3]
+                    # #     [0., 0., 0., 0.]   # Batch 1 的计票箱
+                    # # ])
+                    # ce = torch.zeros(2, 4)
+
+                    # # 2. 索引张量 topk_idx_for_aux_loss (选票上的名字)
+                    # # 形状: [bsz, seq_len * aux_topk] = [2, 6]
+                    # # 记录了当前 Batch 中所有 Token 到底选了哪个专家
+                    # # topk_idx_for_aux_loss = tensor([
+                    # #     [0, 1, 0, 2, 1, 1],  # Batch 0: 专家0得2票, 专家1得3票, 专家2得1票, 专家3得0票
+                    # #     [3, 3, 3, 2, 0, 0]   # Batch 1: 专家0得2票, 专家1得0票, 专家2得1票, 专家3得3票
+                    # # ])
+                    # topk_idx_for_aux_loss = torch.tensor([
+                    #     [0, 1, 0, 2, 1, 1],
+                    #     [3, 3, 3, 2, 0, 0]
+                    # ])
+
+                    # # 3. 数据源张量 torch.ones (选票本身)
+                    # # 形状与索引完全一致: [2, 6]
+                    # # 全是数字 1，表示每一次选中记作 1 票
+                    # ones_tensor = torch.ones(2, 6)
+
+                    # # ==============================================================================
+                    # # 执行 scatter_add_ 核心操作
+                    # # 参数 1: dim=1，表示在维度 1 (列方向，即专家维度) 上进行散射累加
+                    # # 参数 2: 索引 (往哪个专家的箱子里投)
+                    # # 参数 3: 数据源 (投多少票，这里全是 1)
+                    # # ==============================================================================
+                    # ce.scatter_add_(1, topk_idx_for_aux_loss, ones_tensor)
+
+                    # # ==============================================================================
+                    # # 最终结果解析
+                    # # ==============================================================================
+                    # # 执行完毕后，ce 的值更新为：
+                    # # ce = tensor([
+                    # #     [2., 3., 1., 0.],  # Batch 0 的统计结果完美对应上面的分析
+                    # #     [2., 0., 1., 3.]   # Batch 1 的统计结果完美对应上面的分析
+                    # # ])
+                    # # 
+                    # # 物理意义：
+                    # # ce[0][1] = 3.0 代表：在第 0 句话中，专家 1 共计被 Token 选中了 3 次。
+                    # # 接下来，代码会执行 ce.div_(...)，把这个绝对票数转换成相对负载系数，用于计算 Loss。
                 # topk_idx_for_aux_loss 形状: [batch_size, seq_len * top_k]
                 ce.scatter_add_(1, topk_idx_for_aux_loss,
                                 torch.ones(bsz, seq_len * aux_topk, device=hidden_states.device)).div_(
@@ -1914,7 +2221,9 @@ class MoEGate(nn.Module):
                 # 损失公式：aux_loss = α × Σ(Pᵢ × fᵢ)，其中 i 遍历所有专家
 
                 # 步骤 1：将选中的专家索引转换为 one-hot 编码
+                # topk_idx_for_aux_loss 形状: [batch_size, seq_len * top_k]，每个元素是一个专家索引（0 到 n_routed_experts-1）
                 # topk_idx_for_aux_loss.view(-1): 展平为 [batch_size * seq_len * top_k]
+                # 这个时候的 topk_idx_for_aux_loss 就像是一大串选票，每个选票上写着被选中的专家编号
                 # F.one_hot: 转换为 one-hot，形状 [batch_size * seq_len * top_k, n_routed_experts]
                 # 例如：如果某个位置选中专家 2，则该行为 [0, 0, 1, 0, ..., 0]
                 mask_ce = F.one_hot(topk_idx_for_aux_loss.view(-1), num_classes=self.n_routed_experts)
@@ -1923,10 +2232,10 @@ class MoEGate(nn.Module):
                 # ce: 对所有 token 求平均，得到每个专家被选中的比例
                 # 形状: [n_routed_experts]
                 # 例如：ce[2] = 0.15 表示专家 2 被选中了 15% 的次数
-                ce = mask_ce.float().mean(0)
+                ce = mask_ce.float().mean(0)# mean(0) 是对所有 token 求平均，得到每个专家的平均选中频率
 
                 # 步骤 3：计算 Pᵢ（专家 i 的平均门控概率/重要性分数）
-                # scores_for_aux: 所有 token 对所有专家的 softmax 概率
+                # scores_for_aux: 所有 token 对所有专家的 softmax 概率，形状为 [batch_size * seq_len, n_routed_experts]
                 # Pi.mean(0): 对所有 token 求平均，得到每个专家的平均门控分数
                 # 形状: [n_routed_experts]
                 # 例如：Pi[2] = 0.12 表示所有 token 平均给专家 2 打了 12% 的概率
@@ -1983,7 +2292,7 @@ class MOEFeedForward(nn.Module):
         
         # 使用门控机制获取 Top-K 专家的索引、权重以及辅助损失
         topk_idx, topk_weight, aux_loss = self.gate(x)
-        x = x.view(-1, x.shape[-1])
+        x = x.view(-1, x.shape[-1])# 将输入展平为 [batch_size * seq_len, hidden_size]，方便后续根据专家索引进行分发计算
         flat_topk_idx = topk_idx.view(-1)
         
         if self.training:
@@ -2014,41 +2323,113 @@ class MOEFeedForward(nn.Module):
         self.aux_loss = aux_loss
         return y
 
+
+
+    # ==============================================================================
+    # 数据模拟
+    # ==============================================================================
+    # 假设有 2 个 Token (Token 0 和 Token 1)，每个 Token 激活 top_k=2 个专家（总共有 3 个专家可选：0, 1, 2）。
+    #
+    # 原始特征矩阵 x 的形状为 [2, 128] (2个Token，特征维度128)
+    #
+    # 展平后的专家索引 flat_expert_indices = tensor([2, 0, 1, 0])
+    # 展平后的权重     flat_expert_weights = tensor([0.6, 0.4, 0.7, 0.3])
+    #
+    # 物理意义解释：
+    # - 前两个元素属于 Token 0：它选了 专家 2 (权 0.6) 和 专家 0 (权 0.4)
+    # - 后两个元素属于 Token 1：它选了 专家 1 (权 0.7) 和 专家 0 (权 0.3)
+    # ==============================================================================
     @torch.no_grad()
     def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
         """
         MoE 的高效推理函数，通过索引收集分发，降低显存占用并提升运算速度。
         """
+        # 1. 初始化全 0 缓存矩阵，形状与输入 x 完全一致 [2, 128]
+        # 算完的专家结果最后都会累加到这里面
         expert_cache = torch.zeros_like(x)
+
+        # 2. 核心魔法：对专家索引进行升序排序（argsort 返回的是“排序后的原矩阵下标”）
+        # flat_expert_indices 原本是: [2,   0,   1,   0]
+        # 排序成 [0, 0, 1, 2] 之后：
+        # idxs 的结果为:             [1,   3,   2,   0]
+        # 
+        # 这一步把“哪个位置在呼叫专家 0/1/2”的内幕全部拉出来了：
+        # idxs[0]=1 意味着：flat_expert_indices 的第 1 个位置需要专家 0
+        # idxs[1]=3 意味着：flat_expert_indices 的第 3 个位置需要专家 0
+        # idxs[2]=2 意味着：flat_expert_indices 的第 2 个位置需要专家 1
+        # idxs[3]=0 意味着：flat_expert_indices 的第 0 个位置需要专家 2
+        # argsort的语法是：idxs = flat_expert_indices.argsort()，它返回的是一个索引数组 idxs，使得 flat_expert_indices[idxs] 是一个升序排列的版本。
         idxs = flat_expert_indices.argsort()
-        # 统计每个专家负责的 token 总数并求累加和，用于界定切片范围
+
+        # 3. 统计每个专家出现的频次 (bincount)，然后计算前缀和/累加和 (cumsum)
+        # bincount() 的结果是一个长度为 n_routed_experts 的数组，每个位置的值表示对应专家在 flat_expert_indices 中出现的次数。
+        # flat_expert_indices.bincount() 统计得到 -> [2, 1, 1]（表示专家0要上2次场，专家1上1次，专家2上1次）
+        # .cumsum(0) 执行累加和（类似划分边界） -> [2, 3, 4]
+        #
+        # 它的妙处在于直接规定了切片区间：
+        # 区间 [0:2] 是属于专家 0 的数据
+        # 区间 [2:3] 是属于专家 1 的数据
+        # 区间 [3:4] 是属于专家 2 的数据
         tokens_per_expert = flat_expert_indices.bincount().cpu().numpy().cumsum(0)
+
+        # 4. 还原出真实的 Token 编号
+        # 因为前面 flat_expert_indices 是把所有 Token 的 top_k 展平了。
+        # 我们用整除法 (//) 还原它到底属于哪一个原始的 Token。
+        # 假设 self.config.num_experts_per_tok = 2 (即 top_k=2)
+        # idxs           = [1, 3, 2, 0] 代表了专家索引排序后的 Token 位置
+        # idxs // 2 得到 = [0, 1, 1, 0] 代表了每个位置对应的 Token 编号
+        #
+        # 对应关系转换完成：
+        # 属于 专家 0 的 (前两个): token_idxs[0:2] -> [0, 1] (说明 Token 0 和 Token 1 都需要专家 0)
+        # 属于 专家 1 的 (第三个): token_idxs[2:3] -> [1]    (说明 Token 1 需要专家 1)
+        # 属于 专家 2 的 (第四个): token_idxs[3:4] -> [0]    (说明 Token 0 需要专家 2)
         token_idxs = idxs // self.config.num_experts_per_tok
-        
-        # 例如: 当 tokens_per_expert = [6, 15, 20, 26]，tokens_per_expert.shape[0]即为专家数量（此时为4）
-        # 且 token_idxs = [3, 7, 19, 21, 24, 25,  4,  5,  6, 10, 11, 12...] 时
-        # 意味着 token_idxs[:6] -> [3, 7, 19, 21, 24, 25] 这 6 个位置属于专家 0 处理的 token 
-        # (每个 token 有可能被多个专家处理，这取决于 num_experts_per_tok)
-        # 接下来 9 个位置 token_idxs[6:15] -> [4, 5, 6, 10, 11, 12...] 属于专家 1 处理的 token...依此类推
-        
+
+        # 5. 开始遍历每一个专家，按前面算好的边界把对应的 Token 捞出来“集中喂药”
         for i, end_idx in enumerate(tokens_per_expert):
+            # 确定当前专家处理的数据在 idxs/token_idxs 中的起始和结束指针
             start_idx = 0 if i == 0 else tokens_per_expert[i - 1]
+            
+            # 如果当前专家的区间长度为 0（即 start_idx == end_idx），说明全场没有 Token 翻这个专家的牌子
             if start_idx == end_idx:
-                continue # 没有 token 分配给当前专家
-                
+                continue 
+
+            # 捞出当前专家对象（一个普通的 FFN 线性层网络）
             expert = self.experts[i]
+            
+            # 截取属于当前专家的 Token 索引号
+            # 以 i=0 (专家 0) 为例：exp_token_idx = token_idxs[0:2] -> [0, 1]
             exp_token_idx = token_idxs[start_idx:end_idx]
-            # 提取属于当前专家的 token
+
+            # 核心优化：利用高维索引，直接从输入矩阵 x 中把编号为 [0, 1] 的特征打包抽出来
+            # expert_tokens 的形状会变成 [2, 128]，这里没有冗余的 0，全部都是纯纯的有效计算
             expert_tokens = x[exp_token_idx]
-            # 经过 FFN 层计算
+
+            # 送入 FFN 层完成矩阵乘法，并确保精度与缓存一致
             expert_out = expert(expert_tokens).to(expert_cache.dtype)
-            # 乘以对应路由权重
+
+            # 乘以它对应的路由权重（Gating Weights）
+            # idxs[start_idx:end_idx] 获取的是当前这批计算在原始平铺矩阵里的位置
+            # 以专家 0 为例，它抓取的是 flat_expert_weights 里的第 1 和第 3 个权重 -> [0.4, 0.3]
+            # .mul_() 是 PyTorch 的就地乘法（In-place乘法），直接乘到网络输出上，极大地节省显存
             expert_out.mul_(flat_expert_weights[idxs[start_idx:end_idx]])
-            # 使用 scatter_add 将算好的结果累加回对应 token 缓存的原始位置上
+
+            # 终极大戏：scatter_add_ (散射累加) 各回各家
+            # 此时 expert_out 计算完毕，它是一个打散的临时工。怎么物归原位？
+            # 
+            # exp_token_idx.view(-1, 1) 的形状变为 [2, 1] -> [[0], [1]]
+            # .repeat(1, x.shape[-1]) 在特征维度上复制 128 次 -> 形状变为 [2, 128]，内容是每一行的通道都写满了对应的 Token 号。
+            #
+            # scatter_add_(0, index, src) 的语法含义是：
+            # “请沿着第 0 维（行方向），把 src 矩阵里的元素，按照 index 里写的行号，加回到 expert_cache 的对应位置上去”
+            #
+            # 例如：expert_out 的第 0 行，会被累加到 expert_cache 的第 0 行 (因为 index 对应位置写的是 0)
+            #       expert_out 的第 1 行，会被累加到 expert_cache 的第 1 行 (因为 index 对应位置写的是 1)
+            # 这样，不同专家为同一个 Token 算出来的多份结果（因为 top_k > 1），就能在原位实现完美的加权融合。
             expert_cache.scatter_add_(0, exp_token_idx.view(-1, 1).repeat(1, x.shape[-1]), expert_out)
 
+        # 6. 功德圆满，返回完全融合好专家输出的最终 Tensor [2, 128]
         return expert_cache
-
 
 class MiniMindBlock(nn.Module):
     """
@@ -2122,9 +2503,10 @@ class MiniMindModel(nn.Module):
         # 兼容一些过去的 kv cache 格式
         if hasattr(past_key_values, 'layers'): past_key_values = None
         past_key_values = past_key_values or [None] * len(self.layers)
+        #如果 past_key_values 是 None（说明是第一次输入 Prompt，还没缓存），它就会被初始化为一个长度等于模型层数（len(self.layers)）的列表，里面全是 None。形式：假设模型有 32 层，初始化后就是 [None, None, ..., None]（共 32 个）。
         
         # 从 past_key_values 确定当前的偏移位置 (如果存在 cache，就无需从 0 开始获取位置编码)
-        start_pos = past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0
+        start_pos = past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0 #代表当前输入序列的起始位置（偏移量），如果没有缓存则默认为 0
 
         # Token 嵌入映射
         hidden_states = self.dropout(self.embed_tokens(input_ids))
@@ -2145,7 +2527,7 @@ class MiniMindModel(nn.Module):
                 use_cache=use_cache,
                 attention_mask=attention_mask
             )
-            presents.append(present)
+            presents.append(present)#present 指的就是当前层计算完、包含了最新 Token 之后的最新 KV Cache（键值缓存）。
 
         # 进行最后的归一化
         hidden_states = self.norm(hidden_states)
@@ -2209,6 +2591,6 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
             loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), ignore_index=-100)
 
         # 封装为兼容 HuggingFace API 的输出格式
-        output = CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_key_values, hidden_states=hidden_states)
+        output = CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_key_values, hidden_states=hidden_states)#把模型计算出来的所有零散结果，打包成一个结构化的标准对象输出，并附加外置的辅助损失。
         output.aux_loss = aux_loss
         return output
