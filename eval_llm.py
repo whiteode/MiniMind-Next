@@ -7,29 +7,53 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 from model.model_lora import *
 from trainer.trainer_utils import setup_seed, get_model_params
+
+# 忽略代码运行过程中的警告信息（让终端输出更干净）
 warnings.filterwarnings('ignore')
 
 def init_model(args):
+    """
+    初始化模型和分词器（Tokenizer）
+    根据参数判断是加载原生的 MiniMind 模型还是 Hugging Face 格式的模型，并处理 LoRA 权重。
+    """
+    # 从指定路径加载分词器
     tokenizer = AutoTokenizer.from_pretrained(args.load_from)
+    
+    # 路径中包含 'model'，说明需要加载自定义的原生 PyTorch 模型结构与权重
     if 'model' in args.load_from:
-        model = MiniMindForCausalLM(MiniMindConfig(
-            hidden_size=args.hidden_size,
-            num_hidden_layers=args.num_hidden_layers,
-            use_moe=bool(args.use_moe),
-            inference_rope_scaling=args.inference_rope_scaling
-        ))
+        # 1. 根据传入的参数实例化 MiniMind 的配置对象
+        config = MiniMindConfig(
+            hidden_size=args.hidden_size,                 # 隐藏层维度
+            num_hidden_layers=args.num_hidden_layers,     # Transformer 层数
+            use_moe=bool(args.use_moe),                   # 是否启用 MoE (混合专家架构)
+            inference_rope_scaling=args.inference_rope_scaling # 是否开启 RoPE 位置编码外推
+        )
+        # 2. 根据配置初始化模型结构
+        model = MiniMindForCausalLM(config)
+        
+        # 3. 拼接权重文件的完整路径（例如: ./out/full_sft_512.pth 或 ./out/full_sft_640_moe.pth）
         moe_suffix = '_moe' if args.use_moe else ''
         ckp = f'./{args.save_dir}/{args.weight}_{args.hidden_size}{moe_suffix}.pth'
+        
+        # 4. 加载 state_dict 并注入到模型中，strict=True 要求结构与权重完全匹配
         model.load_state_dict(torch.load(ckp, map_location=args.device), strict=True)
+        
+        # 5. 如果指定了 LoRA 权重，则动态为模型注入 LoRA 层并加载对应的 LoRA 权重
         if args.lora_weight != 'None':
-            apply_lora(model)
-            load_lora(model, f'./{args.save_dir}/lora/{args.lora_weight}_{args.hidden_size}.pth')
+            apply_lora(model) # 在模型中注入 LoRA 的旁路参数结构
+            load_lora(model, f'./{args.save_dir}/lora/{args.lora_weight}_{args.hidden_size}.pth') # 加载 LoRA 权重
     else:
+        # 如果路径里不包含 'model'，则视其为标准的 Hugging Face 格式，直接通过 transformers 库加载
         model = AutoModelForCausalLM.from_pretrained(args.load_from, trust_remote_code=True)
+        
+    # 打印/计算当前模型的总参数量
     get_model_params(model, model.config)
+    
+    # 将模型设置为评估模式（推理模式），并移动到指定的设备（GPU/CPU）上
     return model.eval().to(args.device), tokenizer
 
 def main():
+    # 配置命令行参数解析器
     parser = argparse.ArgumentParser(description="MiniMind模型推理与对话")
     parser.add_argument('--load_from', default='model', type=str, help="模型加载路径（model=原生torch权重，其他路径=transformers格式）")
     parser.add_argument('--save_dir', default='out', type=str, help="模型权重目录")
@@ -47,6 +71,7 @@ def main():
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu', type=str, help="运行设备")
     args = parser.parse_args()
     
+    # 预设的自动化测试 Prompt 列表
     prompts = [
         '你有什么特长？',
         '为什么天空是蓝色的',
@@ -58,35 +83,83 @@ def main():
         '推荐一些中国的美食'
     ]
     
+    # 用于存储对话历史的列表，格式为 [{"role": "user", "content": "..."}, ...]
     conversation = []
+    
+    # 初始化模型和分词器
     model, tokenizer = init_model(args)
+    
+    # 引导用户选择交互模式：0 为系统预设测试，1 为终端手动打字对话
     input_mode = int(input('[0] 自动测试\n[1] 手动输入\n'))
+    
+    # 初始化流式传输器，实现打字机流式输出效果（跳过 Prompt 和特殊 Token）
     streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     
+    # 根据用户选择确定 Prompt 迭代器：
+    # 0 模式遍历 prompts 列表；1 模式通过 iter 配合 lambda 持续获取键盘输入，直到输入为空白时停止
     prompt_iter = prompts if input_mode == 0 else iter(lambda: input('💬: '), '')
+    
+    # 开始循环对话
     for prompt in prompt_iter:
-        setup_seed(2026) # or setup_seed(random.randint(0, 2048))
-        if input_mode == 0: print(f'💬: {prompt}')
+        # 设置随机种子，保证每次生成结果的确定性（可以换成随机种子以增加多样性）
+        setup_seed(2026) 
+        
+        # 自动测试模式下，打印当前正在测试的 Prompt
+        if input_mode == 0: 
+            print(f'💬: {prompt}')
+            
+        # 根据设置的携带历史轮数（args.historys）对对话历史进行切片截取
+        # 比如 historys=2，则只保留最后 2 个元素（包含 1 轮 user 和 1 轮 assistant 问答）
         conversation = conversation[-args.historys:] if args.historys else []
+        
+        # 将当前用户的输入装入对话历史
         conversation.append({"role": "user", "content": prompt})
 
+        # 构建应用聊天模版（Chat Template）的参数字典
         templates = {"conversation": conversation, "tokenize": False, "add_generation_prompt": True}
-        if args.weight == 'reason': templates["enable_thinking"] = True # 仅Reason模型使用
+        
+        # 如果当前使用的是推理/思考模型（'reason'），则开启思考模式支持（例如 DeepSeek 样式的思维链）
+        if args.weight == 'reason': 
+            templates["enable_thinking"] = True
+            
+        # 如果不是预训练（pretrain）阶段的权重（即已经过 SFT 对齐的模型），则套用 Chat Template
+        # 如果是 pretrain 权重，直接在前面拼上 BOS 标志符（序列开始符）作为原始文本输入
         inputs = tokenizer.apply_chat_template(**templates) if args.weight != 'pretrain' else (tokenizer.bos_token + prompt)
+        
+        # 将文本转换成模型能够识别的 PyTorch Tensor Tensor，并移动到 GPU/CPU
         inputs = tokenizer(inputs, return_tensors="pt", truncation=True).to(args.device)
 
         print('🤖: ', end='')
-        st = time.time()
+        st = time.time()  # 记录生成开始的时间戳
+        
+        # 调用模型开始生成文本
         generated_ids = model.generate(
-            inputs=inputs["input_ids"], attention_mask=inputs["attention_mask"],
-            max_new_tokens=args.max_new_tokens, do_sample=True, streamer=streamer,
-            pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id,
-            top_p=args.top_p, temperature=args.temperature, repetition_penalty=1.0
+            inputs=inputs["input_ids"], 
+            attention_mask=inputs["attention_mask"],
+            max_new_tokens=args.max_new_tokens, # 最大新生成 Token 数量
+            do_sample=True,                      # 启用采样模式（配合温度和 top_p 参数）
+            streamer=streamer,                   # 使用流式传输器，边生成边打印到终端
+            pad_token_id=tokenizer.pad_token_id, 
+            eos_token_id=tokenizer.eos_token_id, 
+            top_p=args.top_p, 
+            temperature=args.temperature, 
+            repetition_penalty=1.0               # 重复惩罚系数，1.0 表示不惩罚
         )
+        
+        # 从生成的完整 Token 序列中切片出“新生成的回复部分”，并解码为文本字符串
         response = tokenizer.decode(generated_ids[0][len(inputs["input_ids"][0]):], skip_special_tokens=True)
+        
+        # 将模型的回复内容追加到历史对话中，用于下一轮多轮对话
         conversation.append({"role": "assistant", "content": response})
+        
+        # 计算本次模型实际生成的新 Token 数量
         gen_tokens = len(generated_ids[0]) - len(inputs["input_ids"][0])
-        print(f'\n[Speed]: {gen_tokens / (time.time() - st):.2f} tokens/s\n\n') if args.show_speed else print('\n\n')
+        
+        # 如果开启了速度显示，计算并打印每秒生成的 Token 速度
+        if args.show_speed:
+            print(f'\n[Speed]: {gen_tokens / (time.time() - st):.2f} tokens/s\n\n')
+        else:
+            print('\n\n')
 
 if __name__ == "__main__":
     main()
