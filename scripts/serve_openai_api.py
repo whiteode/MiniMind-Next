@@ -163,7 +163,27 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Server for MiniMind")
     parser.add_argument('--load_from', default='../model', type=str, help="模型加载路径（model=原生torch权重，其他路径=transformers格式）")
     parser.add_argument('--save_dir', default='out', type=str, help="模型权重目录")
-    parser.add_argument('--weight', default='full_sft', type=str, help="权重名称前缀（pretrain, full_sft, dpo, reason, ppo_actor, grpo, spo）")
+    parser.add_argument('--weight', default='full_sft', type=str, help=(
+        "权重名称前缀，用于指定加载哪一阶段训练出的模型权重。"
+        "各选项含义：\n"
+        "  pretrain   - 预训练阶段（在海量无标注文本上学习语言建模，得到基础语言能力）\n"
+        "  full_sft   - 全量指令微调（在指令数据集上全参数微调，对齐指令遵循能力，默认值）\n"
+        "  dpo        - DPO偏好优化（Direct Preference Optimization 直接偏好优化）\n"
+        "  reason     - 推理微调（针对数学、逻辑等推理任务进行专项微调）\n"
+        "  ppo_actor  - PPO策略网络：Proximal Policy Optimization 中的 Actor 网络权重。\n"
+        "               Actor 网络负责根据当前状态输出动作分布（即下一个 token 的概率分布），\n"
+        "               Critic 网络评估状态价值并计算 Advantage 函数，\n"
+        "               PPO 通过裁剪（clip）策略更新幅度来保证训练的稳定性，\n"
+        "               此权重即 RLHF 阶段中 PPO 训练完成后 Actor 网络的参数快照\n"
+        "  grpo       - GRPO策略优化：Group Relative Policy Optimization，对 PPO 的一种改进变体。\n"
+        "               核心思想：对同一个 prompt 采样多个回复构成一个 group，\n"
+        "               以组内回复的相对优势（而非绝对奖励模型）作为优化信号，\n"
+        "               从而消除对独立 Critic 价值网络的依赖，降低训练开销\n"
+        "  spo        - SPO偏好优化：Safe Policy Optimization，在偏好优化中引入安全约束。\n"
+        "               相较于 DPO 仅关注偏好对齐，SPO 额外约束模型在敏感话题上的输出，\n"
+        "               通过拉格朗日乘子法在奖励最大化与安全约束之间动态权衡，\n"
+        "               确保模型既对齐偏好又满足安全性要求"
+    ))
     parser.add_argument('--lora_weight', default='None', type=str, help="LoRA权重名称（None表示不使用，可选：lora_identity, lora_medical）")
     parser.add_argument('--hidden_size', default=512, type=int, help="隐藏层维度（512=Small-26M, 640=MoE-145M, 768=Base-104M）")
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量（Small/MoE=8, Base=16）")

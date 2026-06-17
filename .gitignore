@@ -1,7 +1,11 @@
 model/__pycache__
+__pycache__/
+*.pyc
 out
 website/
 docs-minimind/
 MiniMind2/
 dataset/*.jsonl
 .vscode/
+minimind_dataset/
+resource/

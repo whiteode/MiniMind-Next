@@ -63,27 +63,38 @@ class LoRA(nn.Module):
 def apply_lora(model, rank=8):
     # 遍历模型中的所有子模块
     for name, module in model.named_modules():
-        # 这里设定了一个条件：只对 nn.Linear 层且权重为方阵（输入维度==输出维度）的层注入 LoRA。
-        # 注意：实际应用中，LoRA 也可以应用于非方阵，这里是代码本身的特定限制。
         if isinstance(module, nn.Linear) and module.weight.shape[0] == module.weight.shape[1]:
-            # 实例化 LoRA 模块，并将其移至与当前层相同的设备 (CPU/GPU)
             lora = LoRA(module.weight.shape[0], module.weight.shape[1], rank=rank).to(module.weight.device)
-            
-            # 将 LoRA 模块作为属性绑定到原 layer 上，方便后续调用和保存
             setattr(module, "lora", lora)
-            
-            # 保存原本的前向传播函数
+            setattr(module, "lora_list", [lora])
+
             original_forward = module.forward
 
-            # 显式绑定：重写前向传播
-            # 【重要技巧】使用默认参数 (layer1=original_forward, layer2=lora) 
-            # 是为了解决 Python 循环中闭包的“延迟绑定（Late Binding）”问题，
-            # 确保每个 layer 绑定的都是自己对应的函数和 lora 实例。
-            def forward_with_lora(x, layer1=original_forward, layer2=lora):
-                # 原路输出 + LoRA分支输出 (即: Wx + \Delta Wx)
-                return layer1(x) + layer2(x)
+            def forward_with_lora(x, layer1=original_forward, lora_modules=module.lora_list):
+                lora_out = sum(lm(x) for lm in lora_modules)
+                return layer1(x) + lora_out
 
-            # 替换原模块的 forward 方法
+            module.forward = forward_with_lora
+
+
+def apply_lora_multi(model, ranks=None):
+    """为每层注入多个不同 rank 的 LoRA 模块，用于多 LoRA 合并推理"""
+    if ranks is None:
+        ranks = [8]
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear) and module.weight.shape[0] == module.weight.shape[1]:
+            lora_modules = nn.ModuleList()
+            for r in ranks:
+                lora = LoRA(module.weight.shape[0], module.weight.shape[1], rank=r).to(module.weight.device)
+                lora_modules.append(lora)
+            setattr(module, "lora_list", lora_modules)
+
+            original_forward = module.forward
+
+            def forward_with_lora(x, layer1=original_forward, lms=lora_modules):
+                lora_out = sum(lm(x) for lm in lms)
+                return layer1(x) + lora_out
+
             module.forward = forward_with_lora
 
 
@@ -91,19 +102,32 @@ def apply_lora(model, rank=8):
 # 3. 加载 LoRA 权重
 # ==========================================
 def load_lora(model, path):
-    # 读取保存的字典状态
     state_dict = torch.load(path, map_location=model.device if hasattr(model, 'device') else 'cpu')
-    
-    # 兼容处理：如果模型使用了 DataParallel (DDP)，权重键名会多出 'module.' 前缀，需要去掉
     state_dict = {(k[7:] if k.startswith('module.') else k): v for k, v in state_dict.items()}
 
-    # 遍历当前模型模块，寻找挂载了 'lora' 属性的层
     for name, module in model.named_modules():
-        if hasattr(module, 'lora'):
-            # 筛选出属于当前特定 lora 模块的权重，并去掉前缀使其与 LoRA 类的内部变量名匹配
+        if hasattr(module, 'lora_list') and len(module.lora_list) == 1:
             lora_state = {k.replace(f'{name}.lora.', ''): v for k, v in state_dict.items() if f'{name}.lora.' in k}
-            # 加载权重
-            module.lora.load_state_dict(lora_state)
+            if lora_state:
+                module.lora_list[0].load_state_dict(lora_state)
+
+
+def load_lora_multi(model, paths, merge_weights=None):
+    """加载多个 LoRA 权重文件到同一个模型的 lora_list 中"""
+    if merge_weights is None:
+        merge_weights = [1.0] * len(paths)
+    for idx, path in enumerate(paths):
+        state_dict = torch.load(path, map_location=model.device if hasattr(model, 'device') else 'cpu')
+        state_dict = {(k[7:] if k.startswith('module.') else k): v for k, v in state_dict.items()}
+        for name, module in model.named_modules():
+            if hasattr(module, 'lora_list') and idx < len(module.lora_list):
+                lora_key_prefix = f'{name}.lora_list.{idx}.'
+                lora_state = {k.replace(lora_key_prefix, ''): v for k, v in state_dict.items() if lora_key_prefix in k}
+                if lora_state:
+                    module.lora_list[idx].load_state_dict(lora_state)
+                    if merge_weights[idx] != 1.0:
+                        for p in module.lora_list[idx].parameters():
+                            p.data.mul_(merge_weights[idx])
 
 
 # ==========================================

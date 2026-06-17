@@ -29,6 +29,30 @@ def get_model_params(model, config):
 
 
 def is_main_process():
+    """
+    判断当前进程是否为主进程（Master Process）。
+    
+    用于在分布式训练中控制“仅由主进程执行”的操作，例如：
+    - 打印日志 (print/logging)
+    - 保存模型权重 (save checkpoint)
+    - 记录可视化数据 (TensorBoard/Wandb)
+
+    返回:
+    -------
+    bool
+        如果当前是单机环境、未启动分布式训练，或者在分布式环境中属于主进程(Rank 0)，
+        则返回 True；否则返回 False。
+    """
+    # 核心逻辑拆解：
+    # 1. not dist.is_initialized():
+    #    判断分布式进程组是否【未】初始化。
+    #    如果返回 True，说明是普通的单 GPU 或单 CPU 训练（没有搞分布式），那当前进程自然就是“主进程”。
+    #
+    # 2. dist.get_rank() == 0:
+    #    如果分布式已经初始化了，则获取当前进程的全局编号（Rank）。
+    #    Rank 0 在分布式系统中被约定为主进程。
+    #
+    # 两者用 `or` 连接：未初始化分布式 OR 当前是 Rank 0，都算作主进程。
     return not dist.is_initialized() or dist.get_rank() == 0
 
 
@@ -38,8 +62,42 @@ def Logger(content):
 
 
 def get_lr(current_step, total_steps, lr):
-    return lr*(0.1 + 0.45*(1 + math.cos(math.pi * current_step / total_steps)))
+    """
+    计算余弦退火（Cosine Annealing）学习率。
+    
+    学习率变化曲线呈余弦波形，前期下降慢，中期下降快，后期减速收敛。
+    最终学习率会平滑衰减至初始学习率的 10%。
 
+    参数:
+    ----------
+    current_step : int
+        当前训练步数 (或当前 epoch)
+    total_steps : int
+        总训练步数 (或总 epoch)
+    lr : float
+        初始最大学习率
+
+    返回:
+    -------
+    float
+        当前步数对应调整后的学习率
+    """
+    # 核心公式拆解说明：
+    # 1. math.pi * current_step / total_steps: 
+    #    将训练进度映射到 [0, π] 的弧度区间。
+    #
+    # 2. math.cos(...): 
+    #    余弦值随进度从 1.0 (训练开始) 逐渐变化到 0.0 (训练过半)，最终降至 -1.0 (训练结束)。
+    #
+    # 3. 1 + math.cos(...): 
+    #    将余弦值区间缩放并平移到 [2.0, 0.0]。
+    #
+    # 4. 0.1 + 0.45 * (...):
+    #    - 训练开始 (cos=1) : 0.1 + 0.45 * 2 = 1.0 (保持原学习率)
+    #    - 训练过半 (cos=0) : 0.1 + 0.45 * 1 = 0.55 (降至 55%)
+    #    - 训练结束 (cos=-1): 0.1 + 0.45 * 0 = 0.1  (保留 10% 底线，防止学习率归零导致模型停止学习)
+    
+    return lr * (0.1 + 0.45 * (1 + math.cos(math.pi * current_step / total_steps)))
 
 def init_distributed_mode():
     if int(os.environ.get("RANK", -1)) == -1:
@@ -155,6 +213,8 @@ def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoc
     """
     if model is not None:
         raw_model = model.module if isinstance(model, DistributedDataParallel) else model
+        # 情况 A：模型被 torch.compile 编译过getattr 发现了 raw_model 里面有 _orig_mod 这个属性。于是它把这个隐藏的原始模型取出来，赋值给 raw_model。
+        # 情况 B：模型是普通模型，没被编译过getattr 找不到 _orig_mod 属性。触发第三个参数（默认值），直接返回 raw_model 本身。
         raw_model = getattr(raw_model, '_orig_mod', raw_model)
         state_dict = raw_model.state_dict()
         state_dict = {k: v.half().cpu() for k, v in state_dict.items()}

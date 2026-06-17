@@ -29,23 +29,84 @@ def post_processing_chat(prompt_content, empty_think_ratio=0.05):
     return prompt_content
 
 class PretrainDataset(Dataset):
+    """
+    大语言模型（LLM）自监督预训练（Pre-training）专用的数据集处理类。
+    继承自 PyTorch 的 Dataset 基类，负责将原始文本转换为模型可直接训练的 Tensor 序列。
+    """
     def __init__(self, data_path, tokenizer, max_length=512):
+        """
+        初始化函数：加载数据源并配置分词参数。
+        
+        参数:
+        - data_path: 原始 JSON 格式训练数据文件的路径
+        - tokenizer: 绑定的分词器（Tokenizer）实例
+        - max_length: 文本最大截断长度（上下文窗口大小，默认512）
+        """
         super().__init__()
         self.tokenizer = tokenizer
         self.max_length = max_length
+        
+        # 使用 Hugging Face datasets 库流式/直接加载本地的 JSON 格式数据集
+        # 读取的数据通常是一个字典结构，包含类似 {"text": "今天天气真好..."} 的字段
         self.samples = load_dataset('json', data_files=data_path, split='train')
 
     def __len__(self):
+        """
+        魔术方法：返回整个数据集中样本的总数量。
+        PyTorch 的 DataLoader 在划分 Batch 和计算 Epoch 时会调用它。
+        """
         return len(self.samples)
 
     def __getitem__(self, index):
+        """
+        魔术方法：根据索引读取单条样本，并进行 Tokenize、拼接特殊符号、Padding、生成标签等全套核心处理。
+        
+        参数:
+        - index: 当前需要读取的样本索引
+        返回:
+        - input_ids: 模型输入的 Token ID 序列（Tensor）
+        - labels: 用于计算交叉熵损失（Loss）的标签序列（Tensor）
+        """
+        # 1. 根据索引从数据集中提取单条样本字典
         sample = self.samples[index]
-        tokens = self.tokenizer(str(sample['text']), add_special_tokens=False, max_length=self.max_length - 2, truncation=True).input_ids
+        
+        # 2. 将样本中的 'text' 字段转化为字符串，并利用分词器转换为一维 Token ID 序列
+        # add_special_tokens=False: 暂时先不让分词器自动加 BOS/EOS，后面我们自己手动加
+        # max_length=self.max_length - 2: 预留2个位置给头部的 BOS 和尾部的 EOS，防止加上后超长
+        # truncation=True: 超过预留长度的文本直接无情截断
+        tokens = self.tokenizer(
+            str(sample['text']), 
+            add_special_tokens=False, 
+            max_length=self.max_length - 2, 
+            truncation=True
+        ).input_ids
+        
+        # 3. 手动包裹特殊符号
+        # 在序列开头拼上 BOS（文本开始符，通常是 <s>），在末尾拼上 EOS（文本结束符，通常是 </s>）
+        # 这是为了让大模型学会如何识别一篇文章的开头和结尾
         tokens = [self.tokenizer.bos_token_id] + tokens + [self.tokenizer.eos_token_id]
+        
+        # 4. 填充 Padding 操作（对齐长度）
+        # 如果当前文本长度小于给定的最大长度 max_length，用 pad_token_id（填充符）在右侧补齐
+        # 计算公式：当前 tokens 后面，拼接 (max_length - 当前长度) 个填充数字
         input_ids = tokens + [self.tokenizer.pad_token_id] * (self.max_length - len(tokens))
+        
+        # 5. 将 Python 的普通的 List 列表转换为 PyTorch 的张量（Tensor）
+        # dtype=torch.long: 必须是 64 位长整型，因为这是 Embedding 嵌入层要求的索引格式
         input_ids = torch.tensor(input_ids, dtype=torch.long)
+        
+        # 6. 生成自监督训练的标签（Labels）
+        # 自回归语言模型的任务是“预测下一个词”，它的标签最初和输入序列是一模一样的（克隆一份）
         labels = input_ids.clone()
+        
+        # 7. 屏蔽遮掩 Padding 的损失计算
+        # input_ids == self.tokenizer.pad_token_id 会生成一个布尔矩阵，定位到所有是 Padding 的位置
+        # 将这些位置的标签强行修改为 -100。
+        # 核心原因：PyTorch的交叉熵损失函数（nn.CrossEntropyLoss）默认会忽略掉标签值为 -100 的位置。
+        # 这样做能保证模型只对“真实文本”计算 Loss，而不会去痛苦地学习和预测那些用来凑长度的无意义填充符
         labels[input_ids == self.tokenizer.pad_token_id] = -100
+        
+        # 返回最终成对的“输入”与“标签”，喂给模型训练
         return input_ids, labels
 
 
