@@ -40,12 +40,24 @@
 
 ---
 
-## 下一个：train_pretrain.py（预训练脚本）
+## train_pretrain.py（预训练脚本 ✅ 已完成）
 
 学习计划见 `plan/train_pretrain_study_plan.md`
 
-- [ ] 导入与全局配置理解
-- [ ] `train_epoch()` 核心循环（前向/反向/梯度累积/学习率调度）
-- [ ] `main()` 函数与参数解析
-- [ ] checkpoint 保存与恢复机制
-- [ ] 训练结果观察与参数调优
+- [✓] 导入与全局配置理解
+- [✓] `train_epoch()` 核心循环（前向/反向/梯度累积/学习率调度）
+- [✓] `main()` 函数与参数解析
+- [✓] checkpoint 保存与恢复机制
+- [✓] 训练结果观察与参数调优
+- [✓] 量化方法系统学习（GPTQ / AWQ / SmoothQuant / NF4 / GGUF / QuaRot / SpinQuant / AffineQuant / TurboQuant / LLM.int8()）
+- [✓] 自测练习题 1~12 全部回答并注释存档
+
+## 下一个：train_full_sft.py（指令微调脚本）
+
+学习计划见 `plan/train_full_sft_study_plan.md`
+
+- [ ] 理解 SFTDataset 的数据处理流程（apply_chat_template）
+- [ ] 理解 generate_labels 的 loss masking 策略
+- [ ] 理解 init_model 从预训练权重加载的机制
+- [ ] 对比 pretrain 和 SFT 的 loss 计算差异
+- [ ] 掌握全模型微调（full SFT）和 LoRA 微调的区别
