@@ -64,15 +64,28 @@
 
 ---
 
-## 下一个：LoRA 参数高效微调
+## 下一个：LoRA 参数高效微调 ✅ 已完成
 
 学习计划见 `plan/train_lora_study_plan.md`
 
-- [ ] 理解 LoRA 的核心思想（低秩分解，冻结原权重）
-- [ ] 理解 LoRA 前向传播流程（旁路加法）
-- [ ] 理解 apply_lora 的模块注入机制
-- [ ] 理解参数冻结与仅训练 LoRA 权重的梯度控制
-- [ ] 理解梯度裁剪作用在 lora_params 而非 model.parameters()
-- [ ] 理解 LoRA 权重的保存/加载机制（save_lora / load_lora）
-- [ ] 对比 full SFT 和 LoRA 的异同（参数量、显存、效果）
-- [ ] 理解多 LoRA 合并与权重融合（apply_lora_multi / load_lora_multi）
+- [✓] 理解 LoRA 的核心思想（低秩分解，冻结原权重）
+- [✓] 理解 LoRA 前向传播流程（旁路加法）
+- [✓] 理解 apply_lora 的模块注入机制
+- [✓] 理解参数冻结与仅训练 LoRA 权重的梯度控制
+- [✓] 理解梯度裁剪作用在 lora_params 而非 model.parameters()
+- [✓] 理解 LoRA 权重的保存/加载机制（save_lora / load_lora）
+- [✓] 对比 full SFT 和 LoRA 的异同（参数量、显存、效果）
+- [✓] 理解多 LoRA 合并与权重融合（apply_lora_multi / load_lora_multi）
+
+---
+
+## 下一个：偏好对齐训练（DPO / GRPO）
+
+学习计划见 `plan/train_dpo_study_plan.md`
+
+- [ ] 理解 DPO 的核心思想（直接偏好优化 vs RLHF）
+- [ ] 理解偏好数据集的格式与构造（chosen / rejected）
+- [ ] 理解 DPO loss 的计算公式
+- [ ] 理解 GRPO 与 DPO 的区别
+- [ ] 理解 reference model 的作用与冻结机制
+- [ ] 掌握完整训练流程：SFT → DPO → Reason → GRPO
