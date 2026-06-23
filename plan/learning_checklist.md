@@ -79,13 +79,25 @@
 
 ---
 
-## 下一个：偏好对齐训练（DPO / GRPO）
+## 下一个：偏好对齐训练（DPO）✅ 已完成
 
 学习计划见 `plan/train_dpo_study_plan.md`
 
-- [ ] 理解 DPO 的核心思想（直接偏好优化 vs RLHF）
-- [ ] 理解偏好数据集的格式与构造（chosen / rejected）
-- [ ] 理解 DPO loss 的计算公式
-- [ ] 理解 GRPO 与 DPO 的区别
-- [ ] 理解 reference model 的作用与冻结机制
-- [ ] 掌握完整训练流程：SFT → DPO → Reason → GRPO
+- [✓] 理解 DPO 的核心思想（直接偏好优化 vs RLHF）
+- [✓] 理解偏好数据集的格式与构造（chosen / rejected）
+- [✓] 理解 DPO loss 的计算公式
+- [✓] 理解 GRPO 与 DPO 的区别
+- [✓] 理解 reference model 的作用与冻结机制
+- [✓] 掌握完整训练流程：SFT → DPO → Reason → GRPO
+
+---
+
+## 下一个：推理能力训练（Reason）
+
+学习计划见 `plan/train_reason_study_plan.md`
+
+- [ ] 理解 reasoning 训练的目标（让模型学会"先思考再回答"）
+- [ ] 理解 <think>/<answer> 特殊 token 的作用
+- [ ] 理解 reasoning 数据的构造格式
+- [ ] 理解 enable_thinking 在推理时的处理逻辑
+- [ ] 对比 reasoning SFT 和普通 SFT 的差异
