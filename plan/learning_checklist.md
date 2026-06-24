@@ -92,12 +92,30 @@
 
 ---
 
-## 下一个：推理能力训练（Reason）
+## 下一个：推理能力训练（Reason）✅ 已完成
 
 学习计划见 `plan/train_reason_study_plan.md`
 
-- [ ] 理解 reasoning 训练的目标（让模型学会"先思考再回答"）
-- [ ] 理解 <think>/<answer> 特殊 token 的作用
-- [ ] 理解 reasoning 数据的构造格式
-- [ ] 理解 enable_thinking 在推理时的处理逻辑
-- [ ] 对比 reasoning SFT 和普通 SFT 的差异
+- [✓] 理解 reasoning 训练的目标（让模型学会"先思考再回答"）
+- [✓] 理解 <think>/<answer> 特殊 token 的作用
+- [✓] 理解 reasoning 数据的构造格式
+- [✓] 理解 enable_thinking 在推理时的处理逻辑
+- [✓] 对比 reasoning SFT 和普通 SFT 的差异
+- [✓] 理解加权 loss 的核心原理（特殊 token 权重 10 倍的原因）
+- [✓] 理解 reduction='none' + 手动 mask 相比 label=-100 的灵活之处
+- [✓] 理解推理数据集的来源（r1_mix_1024.jsonl 是蒸馏数据）
+- [✓] 理解 train_reason.py 的模型架构（单模型，基于 DPO 权重）
+- [✓] 理解 loss_mask_sum vs mask.sum() 两种归一化的数值差异
+- [✓] 自测题 1~9 全部回答并更新至文档
+
+---
+
+## 下一个：组相对策略优化训练（GRPO）
+
+学习计划见 `plan/train_grpo_study_plan.md`
+
+- [ ] 理解 GRPO 与 DPO 的核心区别（在线采样 vs 静态数据）
+- [ ] 理解 GRPO 的奖励模型和奖励信号设计
+- [ ] 理解 why GRPO 依赖 reasoning 格式
+- [ ] 理解 GRPO 的组采样和相对优势计算
+- [ ] 理解 GRPO 训练在 MiniMind 完整流程中的位置
