@@ -10,3 +10,4 @@ dataset/*.jsonl
 minimind_dataset/
 resource/
 .agent/
+.mimocode

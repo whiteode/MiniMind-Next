@@ -38,8 +38,6 @@
 - [✓] knowledge/basic_tests.md — 基础测试结果存档
 - [✓] eval_llm.py — 源码注释已全部整理（含自测答案）
 
----
-
 ## train_pretrain.py（预训练脚本 ✅ 已完成）
 
 学习计划见 `plan/train_pretrain_study_plan.md`
@@ -110,12 +108,51 @@
 
 ---
 
-## 下一个：组相对策略优化训练（GRPO）
+## 下一个：组相对策略优化训练（GRPO）✅ 已完成
 
 学习计划见 `plan/train_grpo_study_plan.md`
 
-- [ ] 理解 GRPO 与 DPO 的核心区别（在线采样 vs 静态数据）
-- [ ] 理解 GRPO 的奖励模型和奖励信号设计
-- [ ] 理解 why GRPO 依赖 reasoning 格式
-- [ ] 理解 GRPO 的组采样和相对优势计算
-- [ ] 理解 GRPO 训练在 MiniMind 完整流程中的位置
+- [✓] 理解 GRPO 与 DPO 的核心区别（在线采样 vs 静态数据）
+- [✓] 理解 GRPO 的奖励模型和奖励信号设计
+- [✓] 理解 GRPO 依赖 reasoning 格式的原因
+- [✓] 理解 GRPO 的组采样和相对优势计算
+- [✓] 理解 GRPO 训练在 MiniMind 完整流程中的位置
+- [✓] 理解 3 模型架构（policy + ref + reward）
+- [✓] 理解格式奖励 + Reward Model 评分的双层奖励设计
+- [✓] 理解 KL 惩罚 exp(kl) - kl - 1 的作用与性质
+- [✓] 理解 `detach()` 在 GRPO loss 中的真实作用（防止梯度自抵消）
+- [✓] 理解 DPO β 乘法 vs GRPO β 加法的本质区别（附比喻集）
+- [✓] 自测题 1~9 全部回答并更新至文档
+
+---
+
+## 下一个：近端策略优化训练（PPO）✅ 已完成
+
+学习计划见 `plan/train_ppo_study_plan.md`
+
+- [✓] 理解 PPO 的 5 模型架构及其各自的作用
+- [✓] 理解 CriticModel 的设计（共享主体 + value_head）
+- [✓] 理解 Critic 随机初始化的含义
+- [✓] 理解 `A = R - V(s)` 的优势计算方式
+- [✓] 理解 PPO 裁剪机制 `min(surr1, surr2)` 的作用
+- [✓] 理解旧策略同步机制（每 K 步同步一次）
+- [✓] 理解 PPO 的 3 成分 Loss（策略 + 价值 + KL）
+- [✓] 对比 PPO 与 GRPO 的优势计算方式差异
+- [✓] 对比 PPO 与 GRPO 的模型数量差异
+- [✓] 理解 Actor 与 Critic 独立优化器、独立调度器的设计
+- [✓] 理解 PPO 在完整管线中的位置
+
+---
+
+## 下一个：自博弈优化训练（SPO）
+
+学习计划见 `plan/train_spo_study_plan.md`
+
+- [ ] 理解 SPO 与 DPO / GRPO / PPO 的本质区别（基线来源不同）
+- [ ] 理解 AutoAdaptiveValueTracker 的 Beta 分布设计思想
+- [ ] 理解 get_baselines() 和 update() 的滑动更新机制
+- [ ] 理解 compute_rho() 的自适应衰减和 D_half 的含义
+- [ ] 理解 SPO 的 3 模型架构与 Loss 结构
+- [ ] 理解 get_per_token_logps 的逐行 gather 处理
+- [ ] 理解 baseline 反标准化和 advantages.clamp 的作用
+- [ ] 对比 SPO / GRPO / PPO / DPO 四种对齐方式的优缺点
