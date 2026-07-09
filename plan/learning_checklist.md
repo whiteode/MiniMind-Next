@@ -144,15 +144,19 @@
 
 ---
 
-## 下一个：自博弈优化训练（SPO）
+## 下一个：自博弈优化训练（SPO）✅ 已完成
 
 学习计划见 `plan/train_spo_study_plan.md`
 
-- [ ] 理解 SPO 与 DPO / GRPO / PPO 的本质区别（基线来源不同）
-- [ ] 理解 AutoAdaptiveValueTracker 的 Beta 分布设计思想
-- [ ] 理解 get_baselines() 和 update() 的滑动更新机制
-- [ ] 理解 compute_rho() 的自适应衰减和 D_half 的含义
-- [ ] 理解 SPO 的 3 模型架构与 Loss 结构
-- [ ] 理解 get_per_token_logps 的逐行 gather 处理
-- [ ] 理解 baseline 反标准化和 advantages.clamp 的作用
-- [ ] 对比 SPO / GRPO / PPO / DPO 四种对齐方式的优缺点
+- [✓] 理解 SPO 与 DPO / GRPO / PPO 的本质区别（基线来源不同）
+- [✓] 理解 AutoAdaptiveValueTracker 的 Beta 分布设计思想
+- [✓] 理解 get_baselines() 和 update() 的滑动更新机制
+- [✓] 理解 compute_rho() 的自适应衰减和 D_half 的含义
+- [✓] 理解 SPO 的 3 模型架构与 Loss 结构
+- [✓] 理解 get_per_token_logps 的逐行 gather 处理
+- [✓] 理解 baseline 反标准化和 advantages.clamp 的作用
+- [✓] 对比 SPO / GRPO / PPO / DPO 四种对齐方式的优缺点
+
+---
+
+## 下一个：知识蒸馏训练（train_distillation.py）
