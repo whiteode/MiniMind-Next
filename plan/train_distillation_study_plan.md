@@ -147,7 +147,18 @@ F.kl_div(
 )
 ```
 
-注意：PyTorch 的 `F.kl_div` 要求第一个参数是 **log 概率**，第二个参数是 **概率**（不是 log）。公式：`Σ q_i × (log(q_i) - log(p_i)) = Σ q_i × log(q_i/p_i)`
+注意：PyTorch 的 `F.kl_div` 要求第一个参数是 **log 概率**，第二个参数是 **概率**（不是 log）。
+
+**内部计算公式**：`Σ target(i) × (log(target(i)) - input(i))`
+
+其中 `target` = 老师概率（P），`input` = 学生 log 概率（log Q），等价于 KL(P || Q) = `Σ P(i) × log(P(i)/Q(i))`。
+
+**为什么这样设计？** 三个原因：
+
+1. **数值稳定性**：`input` 传 log 概率，`log_softmax` 内部做了减去 max 的操作，永远不会输出 `-∞`，避免对零概率取 log 导致数值爆炸（减 max 后数学上完全等价，证明见 Q1）
+2. **实用性**：神经网络通常用 `log_softmax` 输出 log 概率、用 `softmax` 输出概率，PyTorch API 让你直接传这两个常见格式，无需手动转换
+3. **不对称性**：老师（P）在公式中是**线性系数** `P(i) × ...`，不经过 log()，所以没有 log(0) 的风险，直接传概率即可；学生（Q）在 `log()` **里面**，必须是 log 概率
+4. **为什么不改成"老师传 log 概率，内部 exp"？** 数学上等价，但无法区分 log 概率和 logits、exp 可能溢出、性能浪费（详见 Q1 追问）
 
 ### 2.4 为什么蒸馏 loss 要乘 `temperature^2`？
 
@@ -194,6 +205,62 @@ loss = alpha * ce_loss + (1 - alpha) * distill_loss
 - **Distill（KL）**：保证学生学到**老师的风格**——"回答的方式像老师"
 
 两者都重要。只用 CE = 普通 SFT；只用 Distill = 可能学到错误知识（老师也不总是对的）。
+
+| | CE Loss | Distill Loss (KL) |
+|--|---------|-------------------|
+| 监督信号来源 | **训练集的 labels**（hard label） | **老师的输出**（soft label） |
+| 公式 | `Σ -log(p_student(correct_token))` | `Σ p_teacher × log(p_teacher / p_student)` |
+| 作用 | 保证学生学到**标准答案** | 保证学生学到**老师的风格** |
+
+#### CE Loss 的具体计算过程
+
+```python
+# train_distillation.py:67-77
+
+# 1. 生成 loss_mask（区分 prompt 和 response）
+loss_mask = (labels[..., 1:] != -100).float()  # label=-100 的位置是 prompt
+
+# 2. 标签右移一位（自回归预测：位置 i 预测 token i+1）
+shift_labels = labels[..., 1:].contiguous()
+
+# 3. 计算每个 token 的交叉熵
+ce_loss = F.cross_entropy(
+    student_logits.view(-1, student_logits.size(-1)),  # [batch*seq_len, vocab]
+    shift_labels.view(-1),                              # [batch*seq_len]
+    ignore_index=-100,   # 自动忽略 prompt 部分
+    reduction='none'     # 返回每个 token 的独立 loss
+)
+
+# 4. 只对 response 部分求平均
+ce_loss_raw = torch.sum(ce_loss * loss_mask_flat) / (loss_mask_flat.sum() + 1e-8)
+```
+
+**具体数字例子**（假设一条数据）：
+
+```
+tokens:      [BOS]  今天  天气  怎么样  [SEP]  很好  啊  [EOS]
+labels:      [-100, -100, -100, -100,  -100,  很好, 啊,  EOS]
+loss_mask:   [0,    0,    0,    0,     0,     1,    1,   1  ]
+
+shift_labels: [-100, -100, -100, -100, 很好, 啊, EOS, PAD]
+              ← 位置 0 预测 token 1，位置 1 预测 token 2...
+
+位置 5: 真实 token="很好" → loss=0.69
+位置 6: 真实 token="啊"   → loss=1.2
+位置 7: 真实 token="EOS"  → loss=0.3
+位置 0-4: 真实 token=-100 → ignore
+
+ce_loss_raw = (0.69 + 1.2 + 0.3) / 3 = 0.73
+```
+
+**关键点**：
+
+| 步骤 | 作用 |
+|------|------|
+| `ignore_index=-100` | prompt 部分的 label 设为 -100，cross_entropy 自动忽略 |
+| `reduction='none'` | 返回每个 token 的独立 loss，便于后续 mask 加权 |
+| `loss_mask` | 区分 prompt（mask=0）和 response（mask=1），只对 response 求平均 |
+| `shift_labels` | 标签右移一位，让位置 i 的预测对应 token i+1（自回归预测） |
 
 ---
 
@@ -290,21 +357,63 @@ if teacher_model is not None:
 
 为什么截断？因为老师模型可能词表更大（不同 size 的模型用不同 tokenizer），但蒸馏只需要在学生词表范围内做 KL。超过学生词表的部分老师再怎么认为有可能，学生也输出不了，不算。
 
+**在 MiniMind 中截断是安全的**：老师和学生共享同一个词表（默认 vocab_size=6400，token ID 完全对应），所以截断只是维度对齐，不会错位。
+
+**如果老师和学生词表不同**（如 GPT-4 蒸馏 MiniMind）：
+
+```
+老师的 token_id=5 → "cat"
+学生的 token_id=5 → "dog"  ← 不对应！
+简单截断会完全错位
+```
+
+此时需要**词表对齐**：
+1. **词表映射**：建立老师 token → 学生 token 的映射表，只对共同词表做 KL
+2. **tokenizer 对齐**：老师的 logits → 通过学生的 tokenizer 重新编码
+3. **共享 tokenizer**（MiniMind 的做法）：两个模型用同一个 tokenizer，问题不存在
+
 ### 4.4 损失计算（L67-90）
 
 **CE Loss：**
 
 ```python
+# L48: 生成 loss_mask（区分 prompt 和 response）
+loss_mask = (labels[..., 1:] != -100).float()
+
+# L67: 标签右移一位（自回归预测：位置 i 预测 token i+1）
+shift_labels = labels[..., 1:].contiguous()
+
+# L69-74: 计算每个 token 的交叉熵
 ce_loss = F.cross_entropy(
-    student_logits.view(-1, student_logits.size(-1)),
-    shift_labels.view(-1),
-    ignore_index=-100,
-    reduction='none'
+    student_logits.view(-1, student_logits.size(-1)),  # [batch*seq_len, vocab]
+    shift_labels.view(-1),                              # [batch*seq_len]
+    ignore_index=-100,   # 自动忽略 prompt 部分（label=-100）
+    reduction='none'     # 返回每个 token 的独立 loss，便于后续 mask 加权
 )
+
+# L75: 只对 response 部分求平均
 ce_loss_raw = torch.sum(ce_loss * loss_mask_flat) / (loss_mask_flat.sum() + 1e-8)
 ```
 
 和 SFT 一模一样的 CE 计算——用 `ignore_index=-100` 忽略 prompt 部分，只对 response 算 loss。
+
+**具体数字例子**（假设一条数据）：
+
+```
+tokens:      [BOS]  今天  天气  怎么样  [SEP]  很好  啊  [EOS]
+labels:      [-100, -100, -100, -100,  -100,  很好, 啊,  EOS]
+loss_mask:   [0,    0,    0,    0,     0,     1,    1,   1  ]
+
+shift_labels: [-100, -100, -100, -100, 很好, 啊, EOS, PAD]
+              ← 位置 0 预测 token 1，位置 1 预测 token 2...
+
+位置 5: 真实 token="很好" → loss=0.69
+位置 6: 真实 token="啊"   → loss=1.2
+位置 7: 真实 token="EOS"  → loss=0.3
+位置 0-4: 真实 token=-100 → ignore
+
+ce_loss_raw = (0.69 + 1.2 + 0.3) / 3 = 0.73
+```
 
 **Distillation Loss：**
 
@@ -492,9 +601,251 @@ Soft label： "好"=0.60, "坏"=0.15, "热"=0.15, ...  ← 还知哪些相关哪
 
 答案：可以，但蒸馏**不提高能力上限**。如果老师本身在某些任务上不行，学生也学不到。蒸馏做的是"知识迁移"而非"能力创造"。
 
+**追问：如果想要能力创造要做什么？**
+
+蒸馏只能迁移知识，不能创造能力。想让小模型真正变强，需要其他方法：
+
+| | 蒸馏（知识迁移） | 能力创造 |
+|--|----------------|---------|
+| 目标 | 模仿老师的行为 | 超越老师的能力上限 |
+| 监督信号 | 老师的 soft label | 奖励信号 / 环境反馈 |
+| 核心方法 | KL 散度 | 强化学习（RLHF/GRPO/PPO） |
+
+**能力创造的方法**：
+
+1. **强化学习（RLHF/GRPO/PPO）**：模型自己尝试，根据奖励自我改进。老师只能教"我知道的"，RL 可以让模型发现"老师不知道的"。GRPO: 模型生成多个回答 → 奖励模型打分 → 好的增强，差的抑制。
+
+2. **数据增强 + 大规模训练**：更多数据 → 更多知识 → 更强能力；更多算力 → 更大模型 → 更高上限。
+
+3. **架构创新**：MoE（混合专家）→ 同样参数量，更强能力；更高效的注意力机制 → 同样算力，更好效果。
+
+4. **自我对弈 / 自我改进**：AlphaGo 的思路：模型和自己下棋，不断进步。不依赖外部老师，靠环境反馈创造新能力。
+
+**蒸馏 + RL 的组合策略**：
+- 第一阶段：蒸馏（知识迁移）→ 老师 → 学生：学到基础能力和老师的风格
+- 第二阶段：RL（能力创造）→ 学生 + 奖励信号：在老师的基础上继续进步
+
+**一句话总结**：蒸馏是"站在巨人肩膀上"，RL 是"自己成为巨人"。
+
 ---
 
-## 八、与其他文件的关系
+## 八、常见问题解答（Q&A）
+
+### Q1：`F.kl_div` 的两个参数为什么要求第一个是 log 概率，第二个是概率？这样设计的原因是什么？
+
+**问题背景**：
+
+```python
+F.kl_div(
+    student_log_probs,   # 第一个参数：学生的 log 概率
+    teacher_probs,       # 第二个参数：老师的概率（不是 log）
+    reduction='batchmean'
+)
+```
+
+**答案**：
+
+#### KL 散度公式推导
+
+KL 散度的标准定义是：
+
+```
+KL(P || Q) = Σ P(i) × log(P(i) / Q(i))
+```
+
+其中 P 是"真实分布"（老师），Q 是"近似分布"（学生）。
+
+`F.kl_div(input, target)` 内部计算的是：
+
+```
+Σ target(i) × (log(target(i)) - input(i))
+```
+
+把 `target` 当作 P，`input` 当作 Q，等价于：
+
+```
+= Σ P(i) × (log(P(i)) - log(Q(i)))
+= Σ P(i) × log(P(i) / Q(i))
+= KL(P || Q)  ✓
+```
+
+#### 为什么这样设计？核心原因：数值稳定性
+
+KL 散度公式里有 `log(P(i) / Q(i))`，展开后是 `log(P(i)) - log(Q(i))`：
+
+- `target`（P）作为线性系数出现（`P(i) × ...`），以**概率**形式传入更自然
+- `input`（Q）在 `log()` 里面，必须是 **log 概率**，否则需要对概率再取 `log()`
+
+**如果 input 是概率而不是 log 概率**：
+
+```python
+# 假设 Q 是某个词的概率 = 0.000001（接近零）
+# 如果 input 是概率，内部需要算 log(0.000001) = -13.8
+# 但如果概率是 0，log(0) = -∞，数值爆炸
+```
+
+**为什么老师（target）不需要 log 概率？**
+
+关键区别在于两者在公式中的位置：
+
+| | 学生（input） | 老师（target） |
+|--|-------------|-------------|
+| 在公式中的位置 | `log(Q(i))` **里面** | `P(i) × ...` **线性系数** |
+| 需要取 log？ | **需要** → 必须保证输入是 log 概率 | **不需要** → 直接用概率 |
+| 数值风险 | log(0) = -∞ | 无风险（概率 ∈ [0,1]，不涉及 log） |
+
+老师不经过 log()，所以没有 log(0) 的风险，直接传概率就行。
+
+**而用 log_softmax 直接输出 log 概率**：
+
+```python
+# log_softmax 的数学等价：log(softmax(z_i)) = z_i - log(Σ exp(z_j))
+# 内部实现：先减去 max(z) 防止 exp 溢出
+# log_softmax([2.0, 1.0, 0.1]) ≈ [-0.415, -1.415, -2.315]
+# 永远不会输出 -∞，因为 exp(z_i - max) 至少有一个是 1（不为零）
+```
+
+#### log_softmax 减去 max 的原理（数值稳定性核心）
+
+**问题根源**：`log(softmax(z_i))` 的朴素计算是 `z_i - log(Σ exp(z_j))`。当某个 `z_j` 很小时（如 -1000），`exp(-1000) ≈ 0`，而 `log(0) = -∞`，数值爆炸。
+
+**解决方案**：`log_softmax` 的实际实现是：
+
+```
+log_softmax(z_i) = z_i - max(z) - log(Σ exp(z_j - max(z)))
+```
+
+减去 `max(z)` 后，**至少有一个** `z_j - max(z) = 0`，所以 `exp(0) = 1`，求和结果**至少是 1**，`log(≥1)` 永远是有限值。
+
+**具体数字例子**（`logits = [2.0, 1.0, -100.0]`）：
+
+```
+# 减 max 的做法（log_softmax 的实现）：
+max(z) = 2.0
+z - max = [0.0, -1.0, -102.0]
+
+exp([0.0, -1.0, -102.0]) = [1.0, 0.368, ~0.0]
+sum = 1.368                        # 至少是 1！
+log(1.368) = 0.313                 # 有限值，永远不会 -∞
+
+log_softmax = [0.0-0.313, -1.0-0.313, -102.0-0.313]
+            = [-0.313, -1.313, -102.313]   # 全部有限
+```
+
+**关键洞察**：不管 logits 多极端，减 max 后求和**至少是 1**（因为有一项是 `exp(0)=1`），所以 `log(Σ)` 永远 ≥ 0，永远不会出现 `log(0) = -∞`。
+
+#### 减 max 后的数学等价性证明
+
+**目标**：证明 `log(softmax(z_i)) = z_i - max(z) - log(Σ exp(z_j - max(z)))`
+
+**左边（定义）**：
+
+```
+log(softmax(z_i)) = log(exp(z_i) / Σ exp(z_j))
+                   = log(exp(z_i)) - log(Σ exp(z_j))
+                   = z_i - log(Σ exp(z_j))
+```
+
+**右边（减 max 后）**：
+
+```
+z_i - max(z) - log(Σ exp(z_j - max(z)))
+```
+
+**关键一步**：对 `log(Σ exp(z_j - max(z)))` 展开：
+
+```
+Σ exp(z_j - max(z)) = Σ [exp(z_j) / exp(max(z))]    # 指数减法 = 除法
+                    = (1 / exp(max(z))) × Σ exp(z_j)   # 提取常数
+
+log(Σ exp(z_j - max(z))) = log(Σ exp(z_j)) - log(exp(max(z)))
+                         = log(Σ exp(z_j)) - max(z)
+```
+
+**代入右边**：
+
+```
+z_i - max(z) - [log(Σ exp(z_j)) - max(z)]
+= z_i - max(z) - log(Σ exp(z_j)) + max(z)
+= z_i - log(Σ exp(z_j))
+= 左边  ✓
+```
+
+**证毕。** `max(z)` 在减法和加法中完全抵消，结果与原始公式完全一致。
+
+**直观理解**：`max(z)` 就像一个"参考零点"——把所有 logits 整体平移，softmax 的结果不变（因为分子分母同时除以 `exp(max(z))`），但数值范围从可能的溢出区移到了安全区。
+
+#### log_softmax vs softmax 的数值对比
+
+```python
+# 假设 logits = [10.0, 0.1, -100.0]（第一个词极度自信）
+
+# softmax 输出概率：
+softmax = [0.9999, 0.0001, ~0.0]
+# 问题：第三个概率 ≈ 0，log(0) = -∞
+
+# log_softmax 输出 log 概率：
+log_softmax = [-0.0001, -9.2, -110.1]
+# 问题解决：每个值都是有限的，永远不会 -∞
+```
+
+#### 实际代码中的体现
+
+```python
+# 在 train_distillation.py 中：
+student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)  # log 概率
+teacher_probs = F.softmax(teacher_logits / temperature, dim=-1)          # 概率
+
+# 如果学生传概率而不是 log 概率：
+student_probs = F.softmax(student_logits / temperature, dim=-1)          # 概率
+# F.kl_div(student_probs, teacher_probs)  ← PyTorch 会对概率再取 log，可能遇到 log(0) = -∞
+
+# 如果老师也传 log 概率：
+teacher_log_probs = F.log_softmax(teacher_logits / temperature, dim=-1)  # log 概率
+# F.kl_div(student_log_probs, teacher_log_probs)  ← 语义错误：PyTorch 会对 log 概率再取 exp 再取 log
+```
+
+#### 总结
+
+| 参数 | 期望格式 | 为什么 |
+|------|----------|--------|
+| `input`（学生） | **log 概率** | 在 `log()` 里面，必须用 log 概率避免 log(0) = -∞ |
+| `target`（老师） | **概率** | 线性系数 `P(i) × ...`，不经过 log()，无数值风险 |
+
+这是一个**实用性设计**——神经网络通常用 `log_softmax` 输出 log 概率（稳定），用 `softmax` 输出概率（直观）。PyTorch 的 API 让你直接传这两个常见的输出格式，不需要手动转换。
+
+#### 与其他框架的对比
+
+| 框架 | KL 散度 API | 参数要求 |
+|------|------------|----------|
+| PyTorch | `F.kl_div(log_input, target)` | log 概率 + 概率 |
+| TensorFlow | `tf.nn.softmax_cross_entropy_with_logits` | logits + one-hot（不同函数） |
+| JAX/NumPy | 手动实现 `np.sum(p * np.log(p/q))` | 概率 + 概率（需自己保证数值稳定） |
+
+PyTorch 的设计最"贴心"——它帮你处理了数值稳定性问题，你只需要传 `log_softmax` 和 `softmax` 的输出即可。
+
+#### 追问：如果老师也传 log 概率，内部公式改成 exp(target) 行不行？
+
+**数学上完全等价**（差值 = 0）：
+
+```
+方案 A（当前）：Σ target × (log(target) - input)     # target = P（概率）
+方案 B（假设）：Σ exp(target) × (target - input)     # target = log P（log 概率）
+
+两者都等于 Σ P(i) × log(P(i)/Q(i)) = KL(P || Q)
+```
+
+**但 PyTorch 不这么设计，原因有三**：
+
+1. **无法区分 log 概率和普通 logits**：两者都是实数向量，PyTorch 无法判断你传的是哪种
+2. **exp 可能溢出**：如果 log 概率不是 `log_softmax` 的输出（如手动构造的未归一化值），`exp(1000) = inf`
+3. **性能浪费**：老师算完 softmax 得到概率，再取 log 传进去，PyTorch 内部再 exp 回来，等于绕了一圈
+
+**本质**：概率和 log 概率是两种不同的数据格式，API 通过参数位置明确告诉你要哪种，避免歧义。
+
+---
+
+## 九、与其他文件的关系
 
 ```
 train_distillation.py
@@ -511,7 +862,7 @@ train_distillation.py
 
 ---
 
-## 九、推荐学习路径
+## 十、推荐学习路径
 
 1. **先看理论**：仔细阅读本文第二、三节（核心概念 + 代码结构总览）
 2. **通读代码**：打开 `train_distillation.py`，对照本文第四节逐行看

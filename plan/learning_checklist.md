@@ -159,4 +159,36 @@
 
 ---
 
-## 下一个：知识蒸馏训练（train_distillation.py）
+## 下一个：知识蒸馏训练（train_distillation.py）✅ 已完成
+
+学习计划见 `plan/train_distillation_study_plan.md`
+
+- [✓] 理解蒸馏的核心思想（让小模型模仿大模型）
+- [✓] 理解温度 T 对 softmax 分布的影响
+- [✓] 理解 Soft Target vs Hard Target 的信息量差异
+- [✓] 理解 KL 散度在蒸馏中的作用（衡量学生与老师的分布差距）
+- [✓] 理解 `F.kl_div` 的参数设计（log 概率 vs 概率）与数值稳定性
+- [✓] 理解 `log_softmax` 减去 max 的原理与数学等价性证明
+- [✓] 理解为什么老师用概率、学生用 log 概率（不对称性设计）
+- [✓] 理解蒸馏 loss 乘 `temperature^2` 的原因（梯度补偿）
+- [✓] 理解 `alpha * CE + (1-alpha) * Distill` 的加权策略
+- [✓] 理解 CE Loss 的具体计算过程（shift_labels + loss_mask）
+- [✓] 理解双模型架构（学生可训练 + 老师冻结）
+- [✓] 理解老师 logits 截断到学生词表大小的原因
+- [✓] 理解词表对齐问题（同 tokenizer 安全，不同 tokenizer 需映射）
+- [✓] 理解蒸馏与之前所有方法的对比（模型数量、Loss、适用场景）
+- [✓] 理解蒸馏的知识迁移 vs RL 的能力创造
+- [✓] 自测题 1~14 全部回答并更新至文档
+
+---
+
+## 下一个：分词器训练（train_tokenizer.py）
+
+学习计划见 `plan/train_tokenizer_study_plan.md`（已创建）
+
+- [ ] 理解 BPE（Byte Pair Encoding）分词算法的原理
+- [ ] 理解 `tokenizers` 库的核心组件（Tokenizer / Trainer / PreTokenizer / Decoder）
+- [ ] 理解特殊 token 的作用（bos / eos / Sep）
+- [ ] 理解 vocab_size 对模型能力的影响
+- [ ] 理解为什么 MiniMind 不建议重新训练 tokenizer
+- [ ] 动手练习：用不同 vocab_size 训练 tokenizer 并对比效果
