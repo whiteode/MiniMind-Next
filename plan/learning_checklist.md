@@ -182,13 +182,34 @@
 
 ---
 
-## 下一个：分词器训练（train_tokenizer.py）
+## 下一个：分词器训练（train_tokenizer.py）✅ 已完成
 
 学习计划见 `plan/train_tokenizer_study_plan.md`（已创建）
 
-- [ ] 理解 BPE（Byte Pair Encoding）分词算法的原理
-- [ ] 理解 `tokenizers` 库的核心组件（Tokenizer / Trainer / PreTokenizer / Decoder）
-- [ ] 理解特殊 token 的作用（bos / eos / Sep）
-- [ ] 理解 vocab_size 对模型能力的影响
-- [ ] 理解为什么 MiniMind 不建议重新训练 tokenizer
-- [ ] 动手练习：用不同 vocab_size 训练 tokenizer 并对比效果
+- [✓] 理解 BPE（Byte Pair Encoding）分词算法的原理
+- [✓] 理解 `tokenizers` 库的核心组件（Tokenizer / Trainer / PreTokenizer / Decoder）
+- [✓] 理解特殊 token 的作用（bos / eos / Sep）
+- [✓] 理解 vocab_size 对模型能力的影响
+- [✓] 理解为什么 MiniMind 不建议重新训练 tokenizer
+- [✓] 动手练习：用不同 vocab_size 训练 tokenizer 并对比效果
+
+### 学习文档
+- [✓] plan/train_tokenizer_study_plan.md — 学习计划与测试记录（已更新）
+
+---
+
+## 下一个：模型架构（model_minimind.py / model_lora.py）
+
+学习计划见 `plan/model_minimind_study_plan.md`（已创建）
+
+- [ ] 理解 RMSNorm 的原理及与 LayerNorm 的区别
+- [ ] 理解 RoPE 的两步流程（预计算 + 注入）
+- [ ] 理解 Attention 的两条计算路径（Flash Attention vs 手动计算）
+- [ ] 理解 GQA 的分组机制和 repeat_kv 的实现
+- [ ] 理解 KV Cache 的作用与内存布局
+- [ ] 理解 SwiGLU 的三矩阵结构和 8/3 倍的由来
+- [ ] 理解 MoE 的路由机制和辅助损失
+- [ ] 理解 MiniMindBlock 的 Pre-Norm + 残差结构
+- [ ] 理解 Weight Tying（权重绑定）的原理
+- [ ] 能逐模块计算 26M / 104M 参数的来源
+- [ ] 理解 model_lora.py 的 LoRA 注入机制
