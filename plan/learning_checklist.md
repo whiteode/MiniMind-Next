@@ -235,13 +235,46 @@
 
 ---
 
-## 下一个：训练工具函数（trainer_utils.py）
+## 训练工具函数（trainer_utils.py）✅ 已完成
 
-学习计划待创建 `plan/trainer_utils_study_plan.md`
+学习计划见 `plan/trainer_utils_study_plan.md`
 
-- [ ] 理解 is_main_process / Logger 的分布式控制逻辑
-- [ ] 理解 get_lr 余弦退火学习率调度
-- [ ] 理解 init_distributed_mode DDP 初始化
-- [ ] 理解 lm_checkpoint 的断点续传机制（存档 vs 读档）
-- [ ] 理解 init_model 的权重加载流程
-- [ ] 理解 SkipBatchSampler 的跳批次机制
+- [✓] 理解 is_main_process / Logger 的分布式控制逻辑
+- [✓] 理解 get_lr 余弦退火学习率调度
+- [✓] 理解 init_distributed_mode DDP 初始化
+- [✓] 理解 lm_checkpoint 的断点续传机制（存档 vs 读档）
+- [✓] 理解 init_model 的权重加载流程
+- [✓] 理解 SkipBatchSampler 的跳批次机制
+- [✓] 理解 lm_checkpoint 原子写入与 world_size 步数换算
+- [✓] 理解 SkipBatchSampler + indices 的一致性保证
+
+---
+
+## 数据集加载（dataset/lm_dataset.py）✅ 已完成
+
+学习计划见 `plan/lm_dataset_study_plan.md`（已更新）
+
+- [✓] 理解 PretrainDataset 的数据加载与 tokenization
+- [✓] 理解 SFTDataset 的 Chat Template 格式与 loss masking
+- [✓] 理解 DPODataset 的 chosen/rejected 对比数据构造
+- [✓] 理解 RLAIFDataset 的 RLHF 数据格式
+- [✓] 理解 Dataset 的 __len__ / __getitem__ 设计
+- [✓] 理解数据集与训练脚本的对接方式
+- [✓] 对比 PretrainDataset 手动加 BOS/EOS 与 SFTDataset Chat Template 自带特殊 token 的差异
+- [✓] 对比 SFTDataset.generate_labels()（-100）与 DPODataset.generate_loss_mask()（0/1）的设计选择
+- [✓] 理解 DPODataset __getitem__ 的 shift 处理与 6 个返回值的含义
+- [✓] 自测问题 Q1~Q5 全部回答并更新至文档
+
+---
+
+## 下一个：API 服务部署（scripts/serve_openai_api.py）
+
+学习计划见 `plan/serve_openai_api_study_plan.md`（已创建）
+
+- [ ] 理解 init_model 的两条加载路径（原生 .pth vs HuggingFace 格式）
+- [ ] 理解 ChatRequest Pydantic 模型的作用
+- [ ] 理解 CustomStreamer + Queue + Thread 的流式生成机制
+- [ ] 理解 generate_stream_response 的 SSE 格式编码
+- [ ] 理解 chat_completions 流式/非流式双分支
+- [ ] 理解 __main__ 中 uvicorn 的启动方式
+- [ ] 对比 serve_openai_api.py 与 eval_llm.py 的差异
