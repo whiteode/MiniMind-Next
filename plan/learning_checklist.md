@@ -198,18 +198,50 @@
 
 ---
 
-## 下一个：模型架构（model_minimind.py / model_lora.py）
+## model_minimind.py 模型架构 ✅ 已完成
 
-学习计划见 `plan/model_minimind_study_plan.md`（已创建）
+学习计划见 `plan/model_minimind_study_plan.md`
 
-- [ ] 理解 RMSNorm 的原理及与 LayerNorm 的区别
-- [ ] 理解 RoPE 的两步流程（预计算 + 注入）
-- [ ] 理解 Attention 的两条计算路径（Flash Attention vs 手动计算）
-- [ ] 理解 GQA 的分组机制和 repeat_kv 的实现
-- [ ] 理解 KV Cache 的作用与内存布局
-- [ ] 理解 SwiGLU 的三矩阵结构和 8/3 倍的由来
-- [ ] 理解 MoE 的路由机制和辅助损失
-- [ ] 理解 MiniMindBlock 的 Pre-Norm + 残差结构
-- [ ] 理解 Weight Tying（权重绑定）的原理
-- [ ] 能逐模块计算 26M / 104M 参数的来源
-- [ ] 理解 model_lora.py 的 LoRA 注入机制
+- [✓] 理解 RMSNorm 的原理及与 LayerNorm 的区别
+- [✓] 理解 RoPE 的两步流程（预计算 + 注入）
+- [✓] 理解 Attention 的两条计算路径（Flash Attention vs 手动计算）
+- [✓] 理解 GQA 的分组机制和 repeat_kv 的实现
+- [✓] 理解 KV Cache 的作用与内存布局
+- [✓] 理解 SwiGLU 的三矩阵结构和 8/3 倍的由来
+- [✓] 理解 MoE 的路由机制和辅助损失
+- [✓] 理解 MiniMindBlock 的 Pre-Norm + 残差结构
+- [✓] 理解 Weight Tying（权重绑定）的原理
+- [✓] 能逐模块计算 26M / 104M 参数的来源
+- [✓] 深入理解：先重塑再 RoPE 的原因、Pre-Norm vs Post-Norm 梯度流、Flash Attention 因果计算优化、因果掩码注入时机、MoE 辅助损失 Pᵢ/fᵢ 计算
+
+### 学习文档
+- [✓] plan/model_minimind_study_plan.md — 学习计划与 Q&A 记录（已更新，含大量图解）
+
+---
+
+## model_lora.py LoRA 底层实现 ✅ 已完成
+
+学习计划见 `plan/model_lora_study_plan.md`
+
+- [✓] 理解 LoRA 的数学原理（低秩分解 A×B）
+- [✓] 理解 LoRA 的注入机制（如何替换 nn.Linear）
+- [✓] 理解 apply_lora / save_lora / load_lora 的实现细节
+- [✓] 理解多 LoRA 合并（apply_lora_multi / load_lora_multi）
+- [✓] 理解 LoRA 权重融合（merge）的原理
+- [✓] 对比 model_lora.py 与 train_lora.py 的分工
+
+### 学习文档
+- [✓] plan/model_lora_study_plan.md — 学习计划与 Q&A 记录（已更新）
+
+---
+
+## 下一个：训练工具函数（trainer_utils.py）
+
+学习计划待创建 `plan/trainer_utils_study_plan.md`
+
+- [ ] 理解 is_main_process / Logger 的分布式控制逻辑
+- [ ] 理解 get_lr 余弦退火学习率调度
+- [ ] 理解 init_distributed_mode DDP 初始化
+- [ ] 理解 lm_checkpoint 的断点续传机制（存档 vs 读档）
+- [ ] 理解 init_model 的权重加载流程
+- [ ] 理解 SkipBatchSampler 的跳批次机制

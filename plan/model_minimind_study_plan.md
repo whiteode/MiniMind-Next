@@ -78,6 +78,92 @@
 形状 [1, 10, 6400]：10 个位置，每个位置有 6400 个候选词的分数
 ```
 
+### 结构图拆解：每个 MiniMindBlock 内部到底发生了什么
+
+上面结构图中最核心的部分是 `MiniMindBlock × 8 层`。每个 Block 是一个独立的"处理器"，一共堆叠 8 次。下面逐层拆解：
+
+#### 子块 1：Attention（注意力机制）
+
+```
+输入 hidden_states: [batch, seq_len, hidden_size]
+    │
+    ├──▶ RMSNorm (input_layernorm)     ← 先归一化（Pre-Norm）
+    │
+    ├──▶ Attention (self_attn)          ← 让每个 token "看到"序列里其他 token 的信息
+    │
+    └──▶ + residual (残差连接)           ← 把原始输入直接加上去
+         │
+         ▼
+    输出 hidden_states（同形状）
+```
+
+对应代码（`model_minimind.py:2456-2462`）：
+
+```python
+residual = hidden_states                                    # 1. 保存原始输入
+hidden_states = self.self_attn(self.input_layernorm(hidden_states), ...)  # 2. Norm → Attention
+hidden_states += residual                                   # 3. 残差相加
+```
+
+#### 子块 2：FFN / MoE（前馈神经网络）
+
+```
+hidden_states（来自子块1）
+    │
+    ├──▶ RMSNorm (post_attention_layernorm)  ← 再次归一化
+    │
+    ├──▶ MLP: SwiGLU 或 MOEFeedForward       ← 对每个 token 的特征做"深度加工"
+    │
+    └──▶ + residual (残差连接)
+         │
+         ▼
+    输出 hidden_states（同形状）
+```
+
+对应代码（`model_minimind.py:2465`）：
+
+```python
+hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
+```
+
+#### 关键概念解释
+
+**Pre-Norm 是什么意思？**
+
+标准 Transformer 是"先计算，再归一化"（Post-Norm）。MiniMind 用的是 LLaMA 风格的"先归一化，再计算"（Pre-Norm），训练更稳定。
+
+```
+Pre-Norm (MiniMind):   x → Norm → Sublayer → + x
+Post-Norm (原始):      x → Sublayer → + x → Norm
+```
+
+**残差连接（`+= residual`）的作用？**
+
+相当于高速公路旁边的"快捷通道"，让梯度可以不经过复杂计算直接回传。没有它，8 层堆叠会导致梯度消失，模型训不动。
+
+**为什么有两个 RMSNorm？**
+
+Attention 和 FFN 是两个独立的操作，各自处理前都需要归一化。如果共用一个 Norm，会导致 Attention 输出的分布干扰 FFN 的输入。
+
+#### 完整数据流（以 [1, 10, 512] 为例）
+
+```
+[1, 10, 512]   进入第 1 层 Block
+    │  RMSNorm → Attention → + residual
+    │  RMSNorm → SwiGLU    → + residual
+    ▼
+[1, 10, 512]   进入第 2 层 Block（形状完全不变！）
+    │  ...同样处理...
+    ▼
+  ...重复 8 次...
+    ▼
+[1, 10, 512]   出来
+```
+
+整个过程中 `hidden_size`（512）维度**始终不变**，变化的是每个位置的向量内容——它们逐渐包含了越来越多的上下文语义信息。
+
+> 大白话：把 8 层 MiniMindBlock 想象成 8 个接力赛选手。每个选手拿到一个"信息包裹"（hidden_states），先整理一下（RMSNorm），然后从不同角度吸收周围的信息（Attention），再加上原始包裹的内容（残差）。接着再整理一次，做一次深度加工（FFN/SwiGLU），再加回原始内容。8 个选手传下来，包裹里的信息越来越丰富、越来越"懂上下文"。
+
 ### 配置速查表
 
 | 配置参数 | Small | Base | MoE | 含义 |
@@ -130,6 +216,49 @@ RMSNorm 省略了两步：
 直接效果：**计算量减约 25%，训练更稳定**。LLaMA、Mistral、Qwen 全都在用。
 
 > 大白话：LayerNorm 是"把全班成绩调整到均分 70 分、标准差 10 分"。RMSNorm 是"只调整标准差到 10 分，不调均分"。后者更简单更快，而且对 Transformer 来说效果一样好。
+
+#### Q: 为什么要乘以可学习的缩放 weight？
+
+核心原因：**归一化后向量的"尺度"被固定了，但模型需要能自由调整每个维度的重要性。**
+
+**没有 weight 会怎样？**
+
+假设一个 512 维的向量，归一化后每个维度的 RMS = 1。这意味着所有维度被"一视同仁"地压到了同一个量级。但问题是：
+
+- 某些维度可能对下游 Attention 特别重要，需要放大
+- 某些维度可能噪声较多，需要缩小
+- 不同层需要不同的缩放策略
+
+如果没有 `self.weight`，模型没有任何手段调整这些——它被锁死在"每个维度贡献相等"的状态。
+
+**weight 做了什么？**
+
+```python
+self.weight = nn.Parameter(torch.ones(dim))  # 初始化为全 1
+```
+
+初始化为 1 意味着**一开始不改变任何东西**（和没加一样）。但在训练过程中：
+
+- 某些维度的 weight 会变大 → 模型学到"这个维度重要，放大它"
+- 某些维度的 weight 会变小 → 模型学到"这个维度不重要，压低它"
+- 每一层、每个维度的 weight 都是**独立可学习**的
+
+**为什么不加偏置 β？**
+
+LayerNorm 有 `γ`（缩放）和 `β`（平移）两个参数。RMSNorm 只保留了 `γ`（缩放），去掉了 `β`（平移）。原因是：
+
+- 减均值已经让数据中心化了，再加平移（β）意义不大
+- 去掉 β 少了一半参数，计算更快
+- 实验证明去掉 β 对性能几乎无影响
+
+**总结**
+
+| 组件 | 作用 | 类比 |
+|------|------|------|
+| `x / RMS(x)` | 消除量纲差异，让向量"能量"归一 | 把全班成绩调到标准差 10 |
+| `self.weight` | 让模型自由调整每个维度的重要性 | 给不同科目设置不同的加权系数 |
+
+> 大白话：想象你把全班成绩标准化到均分 0、标准差 1。标准化之后，你发现数学好的同学在数学维度上得分高，但你可能想**额外加权**数学维度（因为数学是核心能力）。`self.weight` 就是这个"加权旋钮"——归一化负责消除量纲差异，weight 负责让模型自己决定每个维度该占多大比重。
 
 ---
 
@@ -332,6 +461,176 @@ def forward(self, x, position_embeddings, past_key_value=None,
 
 Flash Attention 的 `is_causal=True` 要求 Q 和 K 的 seq_len 相等（N×N），但 Decoding 时 Q 只有 1 个新 token，而 K 是之前所有 L 个 token 的缓存。`[1, 64] × [L, 64]^T` 不是方阵，必须手动计算。
 
+#### Q: 为什么先重塑再加 RoPE，而不是 RoPE 后再重塑？
+
+因为 **RoPE 是按"单个头的维度"设计的旋转操作**，它要求输入的最后两个维度是 `(head_dim//2, 2)` 这样的配对结构。
+
+**如果先 RoPE 再重塑会怎样？**
+
+```python
+# 错误顺序
+xq = self.q_proj(x)                    # [batch, seq, 512]  ← 一整坨
+xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin)  # ❌ 按 512 维切半旋转
+xq = xq.view(bsz, seq_len, 8, 64)      # 再拆成 8 个头
+```
+
+两个致命问题：
+
+**问题一：cos/sin 形状不匹配**
+
+先追踪 `precompute_freqs_cis(dim=64)` 生成的 cos/sin 形状：
+
+```python
+# precompute_freqs_cis 内部：
+freqs = 1.0 / (rope_base ** (torch.arange(0, 64, 2)[:32].float() / 64))  # [32]
+t = torch.arange(end)          # [end]
+freqs = torch.outer(t, freqs)  # [end, 32]
+freqs_cos = torch.cat([torch.cos(freqs), torch.cos(freqs)], dim=-1)  # [end, 64]
+```
+
+在 `MiniMindModel.forward()` 中切片后，cos/sin 形状为 `[seq_length, 64]`，比如 `[10, 64]`。
+
+`apply_rotary_pos_emb` 内部做了 `cos.unsqueeze(1)`，把 `[10, 64]` 变成 `[10, 1, 64]`。
+
+正确顺序的广播：
+
+```
+q:   [batch=1, seq=10, heads=8,  head_dim=64]
+cos: [      1, seq=10,     1,     64]          ← unsqueeze 后
+───────────────────────────────────────
+广播后: [1, 10, 8, 64]  ✅ 完美匹配
+```
+
+如果先 RoPE 再重塑：
+
+```
+q:   [batch=1, seq=10, 512]       ← 还没拆头
+cos: [      1, seq=10, 64]        ← unsqueeze 后
+───────────────────────────────
+广播: [1, 10, 512] vs [1, 10, 64]
+                         ↑
+                    512 ≠ 64，对不上！❌
+```
+
+512 和 64 不兼容，PyTorch 会直接报 **RuntimeError: The size of tensor a (512) must match the size of tensor b (64)**。
+
+**问题二：旋转语义错误（即使形状能对上也是错的）**
+
+即使我们假设 cos/sin 能 somehow 对上（比如手动 pad 到 512），旋转的语义也是错的。
+
+先看 `rotate_half` 和 RoPE 到底在做什么：
+
+```python
+def rotate_half(x):
+    # [x0, x1, ..., x31, x32, x33, ..., x63]
+    # → [-x32, -x33, ..., -x63, x0, x1, ..., x31]
+    return torch.cat((-x[..., x.shape[-1]//2:], x[..., :x.shape[-1]//2]), dim=-1)
+
+q_embed = (q * cos) + (rotate_half(q) * sin)
+```
+
+这是一个**二维旋转**的等价实数形式。对 q 的 64 维向量，它是这样配对的：
+
+```
+维度:  [  0,   1,   2,  ...,  31,  32,  33,  ...,  63 ]
+配对:  (0,32) (1,33) (2,34) ... (31,63)
+         ↕     ↕     ↕          ↕
+       各自独立做 2D 旋转，旋转角度由 cos/sin 决定
+```
+
+也就是说，64 维被切成 **32 对**，每对独立旋转。RoPE 的数学保证是：
+
+```
+q_rotated(m) · k_rotated(n) = f(q, k, m-n)
+```
+
+即注意力分数只依赖**相对位置差**。这个性质的前提是：**每对维度的旋转是独立的、且配对关系是固定的**。
+
+现在看如果把 8 个头的 512 维当成一个整体来 rotate_half：
+
+```
+512 维: [  0,   1,  ..., 255, 256, 257, ..., 511 ]
+配对:   (0,256) (1,257) ... (255,511)
+```
+
+问题来了：
+
+| 原本的配对（正确） | 错误的配对 |
+|---|---|
+| 头 0 的维度 0 ↔ 头 0 的维度 32 | 头 0 的维度 0 ↔ **头 1 的维度 0** |
+| 头 0 的维度 1 ↔ 头 0 的维度 33 | 头 0 的维度 1 ↔ **头 1 的维度 1** |
+| ... | ... |
+| 头 0 的维度 31 ↔ 头 0 的维度 63 | 头 0 的维度 31 ↔ **头 1 的维度 31** |
+
+**跨头配对了！** 头 0 的 Q 向量和头 1 的 Q 向量被混在一起做旋转。这意味着：
+
+1. 头 0 的位置编码"污染"了头 1 的位置编码
+2. 每个头不再独立编码位置信息
+3. `q_rot(m) · k_rot(n) = f(q, k, m-n)` 这个性质被打破——注意力分数不再只依赖相对位置差
+
+结果就是：模型学到的"每个头从不同角度看问题"的能力被破坏，注意力计算的位置感知完全混乱。
+
+**正确顺序的逻辑**
+
+```python
+# 正确顺序
+xq = self.q_proj(x)                    # [batch, seq, 512]
+xq = xq.view(bsz, seq_len, 8, 64)     # [batch, seq, 8, 64]  ← 拆成 8 个头
+xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin)  # cos/sin: [seq, 64]，广播到 8 个头
+```
+
+| 步骤 | Q 的形状 | cos/sin 形状 | 操作 |
+|------|---------|-------------|------|
+| 重塑后 | `[batch, seq, 8, 64]` | — | — |
+| RoPE | `[batch, seq, 8, 64]` | `[seq, 64]` | 按最后一维 64 切半，配对旋转 |
+
+cos/sin 的 64 维广播到 8 个头 × 64 维，每个头独立拿到相同的位置编码——这正是 RoPE 的设计意图。
+
+> 大白话：RoPE 就像给每个头的 Q/K 戴一副"位置手环"。你得先把 8 个头分开（重塑），然后每人戴一副（RoPE）。如果 8 个头还混在一起就戴手环，那手环是按"一整条胳膊"的尺寸做的，戴不上去。而且强行戴上去的话，张三的手环会绑到李四手上——每个头的位置编码就全乱了。
+
+#### Q: 如果用 precompute_freqs_cis(dim=512) 先 RoPE 再分头，会怎样？
+
+形状能对上，但语义有两个致命问题。
+
+**问题一：配对关系跨头（和之前一样）**
+
+`rotate_half` 按最后一维切半配对：
+
+```
+512 维: [  0,   1,  ..., 255, 256, 257, ..., 511 ]
+配对:   (0,256) (1,257) ... (255,511)
+```
+
+拆成 8 个头后，配对 `(0, 256)` 意味着**头 0 的维度 0** 和**头 4 的维度 0** 配对旋转——跨头配对，和之前一样破坏每个头独立编码位置的性质。
+
+**问题二：频率谱完全错乱**
+
+`precompute_freqs_cis` 的频率公式是 `freq_i = 1 / (rope_base ^ (2i / dim))`。`dim` 从 64 变成 512 后，频率完全变了：
+
+| 维度索引 i | dim=512（错误） | dim=64（正确） | 差异 |
+|-----------|:---:|:---:|------|
+| i=0 | 1.0 | 1.0 | 相同 |
+| i=1 | 1/1e6^0.0039 ≈ 0.991 | 1/1e6^0.03125 ≈ 0.931 | 差 6% |
+| i=15 | 1/1e6^0.0586 ≈ 0.764 | 1/1e6^0.46875 ≈ 0.340 | **差 2.2 倍** |
+| i=31 | 1/1e6^0.121 ≈ 0.546 | 1/1e6^0.96875 ≈ 0.107 | **差 5 倍** |
+| i=32~255 | 存在 | — (dim=64 只有 32 对) | 多出 224 对 |
+
+三个后果：
+
+1. **高频维度转得太慢**：i=0~1 的频率从 0.931 降到 0.991，区分相邻 token 的能力变弱
+2. **低频维度转得太快**：i=31 的频率从 0.107 升到 0.546（波长从 ~59 降到 ~11.5），区分远距离 token 的能力丢失
+3. **多出 224 对无意义维度**：RoPE 的 32 对是精心设计的，不是越多越好
+
+**总结**
+
+| 方案 | 形状 | 配对 | 频率谱 | 结果 |
+|------|:----:|:----:|:------:|------|
+| dim=64，先分头再 RoPE | ✅ | ✅ 头内配对 | ✅ 正确 | **正确** |
+| dim=512，先 RoPE 再分头 | ✅ | ❌ 跨头配对 | ❌ 频率错乱 | **错误** |
+| dim=64，先 RoPE 再分头 | ❌ 报错 | — | — | **直接崩** |
+
+> 大白话：RoPE 的 `dim` 参数必须等于 `head_dim`（64），不能等于 `hidden_size`（512）。因为 RoPE 是给"每个头"戴手环，不是给"整条胳膊"戴。即使用 `dim=512` 绕过了形状检查，手环的尺寸（频率）也是按 512 维设计的，套在 64 维的头上完全不合适——转太快或太慢，位置感知全乱。
+
 #### 3.3.4 GQA 的三个变体
 
 | 变体 | Q 头数 | KV 头数 | 显存节省 | 代表模型 |
@@ -463,6 +762,120 @@ fᵢ = 专家 i 的实际负载比例（乘 n_experts 归一化，均衡时应 =
 
 > 大白话：MoEGate 就像一个分诊台。每个 token（"患者"）进来，分诊台给它对 4 个专家各打一个匹配分，选出分数最高的 2 个专家。但分诊台可能偷懒——把所有患者都扔给专家 A（因为 A 刚好在初始阶段表现好一点）。辅助损失就是：如果分诊台偏心，扣分！强迫它把患者均匀分配。
 
+#### Q: Pᵢ 和 fᵢ 具体在哪里计算的？用数字走一遍
+
+Pᵢ 和 fᵢ 不在 `MoEGate.forward()` 的前半段（路由选择部分），而是在后半段的**辅助损失计算**里。代码有两个分支：
+
+**模式 1：批次级辅助损失（经典 Switch Transformer 方式，`seq_aux=False`）**
+
+位置：`model_minimind.py:2217-2256`
+
+```python
+# 步骤 1：把选中的专家索引转成 one-hot
+mask_ce = F.one_hot(topk_idx_for_aux_loss.view(-1), num_classes=self.n_routed_experts)
+
+# 步骤 2：fᵢ = 专家 i 的实际选中频率
+ce = mask_ce.float().mean(0)        # 形状: [n_routed_experts]
+
+# 步骤 3：Pᵢ = 专家 i 的平均门控概率
+Pi = scores_for_aux.mean(0)         # 形状: [n_routed_experts]
+
+# 步骤 4：归一化负载因子
+fi = ce * self.n_routed_experts     # 均衡时 fi = 1.0
+
+# 步骤 5：最终辅助损失
+aux_loss = (Pi * fi).sum() * self.alpha
+```
+
+**模式 2：序列级辅助损失（`seq_aux=True`）**
+
+位置：`model_minimind.py:2127-2216`
+
+```python
+# ce = 每个专家在每条序列中被选中的归一化频率（相当于 fi）
+ce = torch.zeros(bsz, self.n_routed_experts, ...)
+ce.scatter_add_(1, topk_idx_for_aux_loss,
+                torch.ones(bsz, seq_len * aux_topk, ...)).div_(
+    seq_len * aux_topk / self.n_routed_experts)
+# 归一化后 ce 的期望值 = 1.0（完全均衡）
+
+# scores_for_seq_aux.mean(dim=1) = 每条序列中每个专家的平均门控概率（相当于 Pi）
+aux_loss = (ce * scores_for_seq_aux.mean(dim=1)).sum(dim=1).mean() * self.alpha
+```
+
+**用具体数字走一遍（批次级）**
+
+假设 batch=1, seq_len=4, n_experts=4, top_k=2：
+
+```
+token 0 选了专家 [0, 1]    → 专家 0 得 1 票，专家 1 得 1 票
+token 1 选了专家 [0, 2]    → 专家 0 得 1 票，专家 2 得 1 票
+token 2 选了专家 [1, 3]    → 专家 1 得 1 票，专家 3 得 1 票
+token 3 选了专家 [0, 1]    → 专家 0 得 1 票，专家 1 得 1 票
+```
+
+fᵢ（实际负载）计算：
+
+```
+总选票 = 4 tokens × 2 = 8 张
+专家 0 被选 3 次 → ce[0] = 3/8 = 0.375
+专家 1 被选 3 次 → ce[1] = 3/8 = 0.375
+专家 2 被选 1 次 → ce[2] = 1/8 = 0.125
+专家 3 被选 1 次 → ce[3] = 1/8 = 0.125
+
+fi = ce × 4（n_experts）:
+fi = [1.5, 1.5, 0.5, 0.5]
+     ↑    ↑    ↑    ↑
+   过载  过载  闲置  闲置（均衡时应该都是 1.0）
+```
+
+Pᵢ（平均门控概率）计算：
+
+```
+假设 softmax 后每个 token 对 4 个专家的概率分布：
+token 0: [0.4, 0.3, 0.2, 0.1]
+token 1: [0.5, 0.1, 0.3, 0.1]
+token 2: [0.1, 0.4, 0.1, 0.4]
+token 3: [0.3, 0.4, 0.2, 0.1]
+
+Pi = 四行求平均:
+Pi = [0.325, 0.3, 0.2, 0.175]
+      ↑
+   专家 0 的平均门控分数最高（模型最"想"用它）
+```
+
+辅助损失：
+
+```
+aux_loss = (Pi × fi).sum() × α
+         = (0.325×1.5 + 0.3×1.5 + 0.2×0.5 + 0.175×0.5) × 0.01
+         = (0.4875 + 0.45 + 0.1 + 0.0875) × 0.01
+         = 1.125 × 0.01
+         = 0.01125
+```
+
+如果所有 token 都涌向专家 0（极端不均衡）：
+
+```
+fi = [4.0, 0.0, 0.0, 0.0]
+Pi = [0.8, 0.1, 0.05, 0.05]
+
+aux_loss = (0.8×4.0 + 0.1×0 + 0.05×0 + 0.05×0) × 0.01
+         = 3.2 × 0.01 = 0.032  ← 比均衡时大得多！
+```
+
+辅助损失通过反向传播迫使模型把 token 均匀分配。
+
+**总结**
+
+| 变量 | 含义 | 计算方式 | 代码位置 |
+|------|------|---------|---------|
+| **Pᵢ** | 专家 i 的平均门控概率（模型"想"用它的程度） | `scores.mean(0)` — 对所有 token 求平均 | L2242 |
+| **fᵢ** | 专家 i 的实际负载比例 × n_experts | `ce.mean(0) × n_experts` — 统计实际被选中次数 | L2235, L2248 |
+| **aux_loss** | 辅助损失 | `(Pi × fi).sum() × α` | L2256 |
+
+> 大白话：Pᵢ 就是"群众基础"——所有 token 平均有多想选这个专家。fᵢ 就是"实际工作量"——这个专家实际干了多少活。如果一个专家群众基础好（Pᵢ 大）又干了很多活（fᵢ 大），说明它被过度依赖了，辅助损失就会给一个大的惩罚值，逼着模型把活分给别人。
+
 #### 3.5.2 MOEFeedForward — 专家群的"总调度"
 
 **位置**：第 2266 行
@@ -514,6 +927,66 @@ class MOEFeedForward(nn.Module):
 | 显存 | 高（token 复制 2 份） | 低 |
 | 速度 | 快（大批量并行） | 足够快 |
 
+#### Q: 为什么训练模式不能用 moe_infer 的方式？
+
+理论上可以，但有三个原因导致训练不能用 `moe_infer` 的 argsort/bincount 方式。
+
+**原因一：argsort 不可微，梯度链断了**
+
+`moe_infer` 的核心操作：
+
+```python
+idxs = flat_expert_indices.argsort()                          # 排序（不可微）
+tokens_per_expert = flat_expert_indices.bincount().cumsum(0)  # 统计+前缀和（不可微）
+```
+
+这两个是**离散整数操作**，PyTorch autograd 无法对它们求梯度。反向传播到这里梯度就断了——模型无法学到"应该把 token 路由给哪个专家"。
+
+训练模式的 boolean mask 方式：
+
+```python
+mask = (flat_topk_idx == i)       # bool 比较，梯度不经过它
+expert_out = expert(x[mask])      # 梯度通过 expert 参数正常回传
+y[mask] = expert_out              # 梯度通过 y 继续流动
+```
+
+`mask` 从已 detach 的 `topk_idx` 产生，梯度不需要经过 mask 本身，而是通过 `expert(x[mask])` 直接作用在专家参数上。这条路是通的。
+
+**原因二：DDP 空专家问题需要特殊处理**
+
+训练模式代码里有一个关键细节：
+
+```python
+if expert_out.shape[0] > 0:
+    y[flat_topk_idx == i] = expert_out.to(y.dtype)
+else:
+    # 防止空专家导致梯度图断裂
+    y[flat_topk_idx == i] = expert_out.to(y.dtype) + 0 * sum(p.sum() for p in expert.parameters())
+```
+
+当某个专家在当前 batch 中没有被任何 token 选中时，它的参数**没有任何梯度流过**。在 DDP（分布式数据并行）训练中，这会导致：
+
+- 该专家的参数不同步（其他 GPU 上可能有 token 选了这个专家）
+- 梯度桶（gradient bucket）中出现空值，DDP 同步报错
+
+所以用 `0 * sum(p.sum() for p in expert.parameters())` 强制制造一个不改变数值但包含该专家所有参数梯度的"假梯度"。
+
+`moe_infer` 里用 `continue` 跳过空专家，训练时这会直接导致 DDP 崩溃。
+
+**原因三：scatter_add_ 的梯度行为不如直接索引清晰**
+
+虽然 `scatter_add_` 在 PyTorch 中是可微的，但它的梯度是**累加**语义。当多个专家为同一个 token 计算结果时，梯度回传需要正确分派到每个专家。实际调试和数值稳定性都不如训练模式的直接赋值方式好控制。
+
+训练模式的加权融合更直白：
+
+```python
+y = (y.view(*topk_weight.shape, -1) * topk_weight.unsqueeze(-1)).sum(dim=1)
+```
+
+每一步都是标准张量运算，梯度路径清晰、可调试。
+
+> 大白话：训练时模型需要"知道自己错在哪里"（梯度回传）。moe_infer 的 argsort/bincount 就像快递员分拣包裹——分完就丢了记录，梯度回不去了。训练模式的 repeat_interleave 虽然笨一点（把每个 token 复制 2 份），但每一步都有清晰的"收据"，梯度能原路返回。加上 DDP 多卡训练时，空专家必须"假装收到梯度"否则会报错——moe_infer 的 `continue` 跳过做不到这一点。
+
 ---
 
 ### 3.6 MiniMindBlock — Transformer 的单层骨架
@@ -558,6 +1031,19 @@ Pre-Norm 的优势：
 - 训练更稳定：梯度通过残差连接直通前面各层
 - 不需要学习率 warm-up（Post-Norm 需要）
 - 是大模型训练的标配（GPT-3、LLaMA 全都用）
+
+#### Q: Qwen2.5 用的是什么 Norm？
+
+Qwen2.5 用的是 **Pre-Norm**（和 MiniMind 一样）。它的架构是标准的 LLaMA 风格：
+
+| 组件 | Qwen2.5 | MiniMind |
+|------|---------|----------|
+| 归一化 | Pre-Norm (RMSNorm) | Pre-Norm (RMSNorm) |
+| FFN | SwiGLU | SwiGLU |
+| 注意力 | GQA | GQA |
+| 位置编码 | RoPE | RoPE |
+
+这也是目前几乎所有主流开源模型的标准配置——LLaMA 2/3、Mistral、Gemma、DeepSeek 全都是 Pre-Norm + RMSNorm + SwiGLU + GQA + RoPE。原始 Transformer 的 Post-Norm + LayerNorm + ReLU-FFN 已经是"上一代"的设计了。
 
 ---
 
@@ -867,6 +1353,180 @@ n_routed_experts=4, num_experts_per_tok=2, n_shared_experts=1
 - 路径 A（Flash Attention）：`seq_len > 1` 且无 KV Cache。用于训练和推理 Prefill。此时 Q 和 K 长度相等，可以用 `F.scaled_dot_product_attention(is_causal=True)` 高效计算 N×N 因果掩码。
 - 路径 B（手动计算）：`seq_len = 1` 且有 KV Cache。用于逐 token 生成（Decoding）。此时 Q 长度为 1，K 长度为历史总长 L，形状不是方阵，必须手动计算 `Q × K^T / √d` 并手动拼接因果掩码。
 
+**延伸：因果掩码在计算的什么时候注入？**
+
+两条路径的注入时机不同：
+
+路径 A — **参数注入**，在函数调用时传入：
+
+```python
+# L1508-1512
+output = F.scaled_dot_product_attention(
+    xq, xk, xv,
+    is_causal=True    # ← 掩码封装在 fused kernel 内部
+)
+```
+
+掩码的生成和应用全部在 PyTorch 的 fused kernel 里完成，代码层面看不到掩码矩阵。
+
+路径 B — **softmax 之前手动注入**：
+
+```python
+# L1520: 先算原始分数
+scores = (xq @ xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
+#        形状: [batch, heads, Q_len, K_len]
+
+# L1525-1528: 加上三角掩码（注入点）
+scores[:, :, :, -seq_len:] += torch.triu(
+    torch.full((seq_len, seq_len), float("-inf"), device=scores.device),
+    diagonal=1
+)
+
+# L1540: softmax（掩码已经生效）
+scores = F.softmax(scores.float(), dim=-1)
+```
+
+`triu(-inf, diagonal=1)` 生成上三角矩阵，对角线以上设为 `-inf`。加到 scores 上后，softmax 会让这些位置的权重变为 0——即"不能看未来"。
+
+**seq_len=1 时掩码是 no-op**
+
+当 Decoding 时 `seq_len=1`：
+
+```python
+torch.triu(torch.full((1, 1), float("-inf")), diagonal=1)
+# 结果: [[0]]   ← 不是 [[-inf]]！
+```
+
+`triu` 的 `diagonal=1` 保留严格上三角的元素。对于 1×1 矩阵，位置 `(0,0)` 不在严格上三角内（`0 <= 0-1` 为假），所以被设为 0。
+
+这意味着 `scores[:, :, :, -1:] += [[0]]` 什么都没做。这是正确的：**Decoding 时当前 token 可以 attend to 所有历史 token + 自己，没有"未来 token"需要屏蔽。**
+
+> 大白话：训练时所有 token 同时输入，必须告诉模型"第 5 个词不能看第 6 个词"（因果掩码）。Flash Attention 把这个规则写在函数参数里，PyTorch 内部自动处理。手动计算时，在 scores 算完后、softmax 前，把"未来位置"的分数设为负无穷，softmax 后这些位置权重就变 0 了。而 Decoding 时每次只生成 1 个词，没有"未来"可看，所以掩码是 no-op。
+
+**延伸：加了掩码后计算量变了吗？**
+
+没有，**计算量完全不变**。掩码是在 `Q × K^T` 算完之后才加的：
+
+```
+第一步：Q × K^T / √d  → scores [N×N]    ← 计算量 N²×d，掩码还没出现
+第二步：+ triu(-inf)   → scores [N×N]    ← 只是把上三角设为 -inf，零开销
+第三步：softmax         → weights [N×N]    ← -inf 位置变 0，但矩阵大小没变
+第四步：weights × V     → output [N×d]    ← 0×v=0，但矩阵乘法还是跑了
+```
+
+掩码的本质是**先算完所有 N×N 的注意力分数，再把"不该看的位置"的分数设为 `-inf`**。softmax 后这些位置权重为 0，第四步乘 V 时 0×v=0 不产生有效输出，但计算本身还是发生了。
+
+为什么不跳过这些计算？因为 GPU 的 Tensor Core 按固定 tile 大小做并行计算，"跳过某些元素"反而不知道怎么高效调度。还不如全部算完，最后清零。
+
+Flash Attention 之所以快，不是因为跳过计算，而是用 **tiling + online softmax** 减少了 HBM（显存）读写次数——这才是 Attention 的真正瓶颈。
+
+| 阶段 | scores 形状 | 计算量 | 掩码作用 |
+|------|:-----------:|:------:|---------|
+| 训练/Prefill | N×N | O(N²d) | 把上三角设为 -inf，但不减少计算 |
+| Decoding | 1×L | O(Ld) | no-op，没有未来可屏蔽 |
+
+> 大白话：掩码就像考完试后老师划掉几道不该做的题——卷子还是全部写完了，只是那几道题的分数不计入总分。真正的计算节省不是来自掩码，而是来自 Decoding 时 Q 只有 1 个 token（1×L vs N×N）。
+
+**延伸：有没有通过因果掩码减少计算量的方案？**
+
+有，而且 Flash Attention 已经在做了。
+
+**Flash Attention + causal：实际会跳过计算**
+
+Flash Attention 内部按 block（tile）处理。当 `is_causal=True` 时，它知道上三角的 block 全部被 mask 掉，**直接跳过不计算**：
+
+```
+N=8 的注意力矩阵，按 4×4 分 block：
+
+┌───────┬───────┐
+│ Block │ Block │
+│ (0,0) │ (0,1) │  ← (0,1) 全在上三角，Flash 直接跳过
+├───────┼───────┤
+│ Block │ Block │
+│ (1,0) │ (1,1) │  ← (1,1) 全在上三角，直接跳过
+└───────┴───────┘
+
+实际计算: (0,0), (1,0) → 2/4 = 50%
+```
+
+Flash Attention 2 论文明确写了：**causal masking 时跳过被完全 mask 的 block，FLOPs 减少约 50%**。这就是为什么 `is_causal=True` 的 Flash Attention 比 non-causal 还快。
+
+而手动计算的路径 B 不会跳过——GPU 算完所有 N×N 个元素才加掩码。
+
+**其他利用因果结构减少计算的方案**
+
+| 方案 | 策略 | FLOPs | 代价 | 代表模型 |
+|------|------|:-----:|------|---------|
+| Sliding Window | 每个 token 只 attend 最近 W 个 | O(N×W) | 丢失长距离依赖 | Mistral, Gemma 2 |
+| StreamingLLM | 只保留前几个 + 最近 W 个 KV | 不减计算 | 只省 KV Cache 显存 | StreamingLLM |
+| Mamba/SSM | 用状态空间模型替代 attention | O(N) | 某些任务效果不如 attention | Mamba, Mamba-2 |
+| Hybrid (Mamba+Attn) | SSM + 少量 attention 层 | 介于 O(N) 和 O(N²) 之间 | 架构复杂 | Jamba |
+
+**最实用的答案**：Flash Attention 的 `is_causal=True` 已经在利用因果结构减少计算了（跳过上三角 block），而且没有额外代价。这是目前工业界最主流的做法。
+
+**延伸：Flash Attention 为什么能利用因果掩码减少计算？**
+
+核心在于它**不是先算完整的 N×N 再掩码**，而是**按 block 处理，边算边判断要不要跳过**。
+
+标准注意力 vs Flash Attention 的计算方式：
+
+```
+标准注意力:
+  Q × K^T → [N×N 完整矩阵]   ← 全部算完
+  + triu(-inf)               ← 再清零上三角
+
+Flash Attention:
+  Q 切成 [Q₀, Q₁, ..., Qₘ]  每块大小 B×d
+  K 切成 [K₀, K₁, ..., Kₙ]  每块大小 B×d
+
+  for 每个 Q 块 Qᵢ:
+      for 每个 K 块 Kⱼ:
+          if j > i:           ← 关键判断！
+              skip            ← 这块全在上三角，直接跳过
+          else:
+              scores = Qᵢ × Kⱼ^T / √d
+              online softmax 更新
+              output += softmax(scores) × Vⱼ
+```
+
+用 N=8、block_size=4 看跳过效果：
+
+```
+         K₀(0-3)    K₁(4-7)
+       ┌──────────┬──────────┐
+Q₀(0-3)│  计算 ✅  │  跳过 ❌  │  ← Q₀ 只需要 attend K₀
+       ├──────────┼──────────┤
+Q₁(4-7)│  计算 ✅  │  计算 ✅  │  ← Q₁ 需要 attend K₀ 和 K₁
+       └──────────┴──────────┘
+
+计算: 3/4 block → 跳过 1/4
+N→∞ 时，跳过比例 → 50%
+```
+
+为什么能跳过？因为因果掩码是下三角——位置 i 只能 attend 到 0..i：
+
+```
+Q 块处理 [0,1,2,3]，K 块处理 [4,5,6,7]:
+  位置 0 最多看到位置 0
+  位置 1 最多看到 0-1
+  位置 2 最多看到 0-2
+  位置 3 最多看到 0-3
+  → 没有任何位置需要看 4-7 → 整块跳过
+```
+
+判断条件：**K 块的起始位置 > Q 块的结束位置 → 跳过**。
+
+关键使能技术：**online softmax**
+
+标准 softmax 需要看到所有分数才能算（分母是所有 `exp(score)` 的和）。Flash Attention 用 online softmax 逐块增量更新 running_max 和 running_sum，保证逐块计算的结果和一次性算完全矩阵**完全等价**。
+
+```
+标准注意力:    FLOPs = N²×d,    显存 = O(N²)
+Flash (causal): FLOPs ≈ N²×d/2, 显存 = O(N)  ← 计算和显存都省了
+```
+
+> 大白话：标准注意力是"先把整张卷子写完，再划掉不该做的题"。Flash Attention 是"拿到卷子先看题号，发现最后几道大题根本不在我该做的范围内，直接跳过不做"。online softmax 就像"做一道批一道"——不需要等所有题都做完再统一评分，而是边做边更新成绩。
+
 **7. MoE 的辅助损失（Auxiliary Loss）公式是什么？不用会怎样？**
 
 答案：`aux_loss = Σ(Pᵢ × fᵢ) × α`，其中 Pᵢ 是专家 i 的平均门控概率，fᵢ 是专家 i 的实际负载比例（乘 n_experts 归一化，均衡时应 ≈ 1.0）。不用辅助损失会导致"路由崩溃"：模型在训练早期发现某个专家稍微好用一点，就把几乎所有 token 都路由给它，其他专家"饿死"，MoE 退化成普通 FFN。
@@ -874,6 +1534,100 @@ n_routed_experts=4, num_experts_per_tok=2, n_shared_experts=1
 **8. 为什么 Pre-Norm 比 Post-Norm 训练更稳定？**
 
 答案：Post-Norm 的梯度需要穿过归一化层才能到达前面的网络层，梯度可能衰减。Pre-Norm 中残差连接绕过归一化层直连前面的层，梯度可以"无障碍"回传。这就是为什么 Pre-Norm 不需要学习率 warm-up，而原始 Transformer 的 Post-Norm 需要。
+
+**延伸：用示意图看梯度流**
+
+Post-Norm（原始 Transformer）的梯度路径：
+
+```
+x ───────────────────────────────────▶ output
+│                                      ↑
+▼                                      │
+Sublayer(x)                            │
+│                                      │
+▼                                      │
+Add: x + Sublayer(x)                   │
+│                                      │
+▼                                      │
+Norm(·)  ← 梯度必须穿过这里             │
+│                                      │
+└──────────────────────────────────────┘
+```
+
+反向传播时，梯度从 output 回传到 x：
+
+```
+output → Norm → Add → Sublayer → x
+           ↑
+      梯度被 Norm 的 1/σ 缩放
+      如果 σ 很大，梯度就被缩得很小
+```
+
+8 层堆叠后：
+
+```
+output → Norm₈ → ... → Norm₁ → x
+          ↑       ↑       ↑
+        每过一层 Norm，梯度可能衰减一次
+        8 层后：梯度 ≈ (1/σ₁) × (1/σ₂) × ... × (1/σ₈) × 原始梯度
+        如果每层 σ≈2，梯度衰减为 原始/256
+```
+
+Pre-Norm（MiniMind / LLaMA）的梯度路径：
+
+```
+x ───────────────────────────────────▶ output
+│                                      ↑
+│                                      │
+▼                                      │
+Norm(x)  ← Norm 在分支上，不在主干道     │
+│                                      │
+▼                                      │
+Sublayer(Norm(x))                      │
+│                                      │
+▼                                      │
+Add: x + Sublayer(Norm(x))  ← 残差直连  │
+│                                      │
+└──────────────────────────────────────┘
+```
+
+反向传播时：
+
+```
+output → Add ──→ x          ← 主干道：只有 Add，梯度 = 1，不衰减
+           │
+           └→ Sublayer → Norm  ← 分支：梯度可以忽略
+```
+
+8 层堆叠后：
+
+```
+output → Add₈ → ... → Add₁ → x
+           ↑       ↑       ↑
+        每过一层只有 Add（梯度 = 1）
+        8 层后：梯度 = 1 × 1 × ... × 1 = 1（不衰减！）
+```
+
+**为什么 Norm 的 1/σ 会导致梯度衰减？**
+
+```python
+y = x / σ(x) × γ    # σ(x) = RMS(x) 或标准差
+```
+
+反向传播时，梯度经过 Norm 被 `1/σ` 缩放。如果某一层输入能量大（σ 大），梯度就被大幅缩小。
+
+**具体数值对比**（假设 8 层，每层 σ ≈ 1.5）：
+
+```
+Post-Norm:  梯度衰减 = (1/1.5)⁸ = 1/25.6 ≈ 3.9%  → 第 1 层只收到原始的 3.9%
+Pre-Norm:   梯度衰减 = 1⁸ = 100%                   → 第 1 层收到原始的 100%
+```
+
+**为什么 Post-Norm 需要 warm-up？**
+
+训练初期参数随机初始化，输出能量大（σ 很大）。Post-Norm + 大学习率 → 梯度被 σ 大幅缩小但更新步长大 → 不稳定→ 发散。warm-up 先用小学习率让 σ 稳定下来，再逐步增大。Pre-Norm 天然不存在这个问题。
+
+> 大白话：Post-Norm 就像每传一层快递都要过一次安检（Norm），安检可能扣东西（梯度衰减），传了 8 层可能什么都不剩了。Pre-Norm 的主干道是"直达快递"（残差直连），Norm 只在旁边的支路上，不影响主干道的传输。
 
 **9. 推理时的 KV Cache 机制节省了什么？如何工作？**
 
