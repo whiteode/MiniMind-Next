@@ -267,14 +267,49 @@
 
 ---
 
-## 下一个：API 服务部署（scripts/serve_openai_api.py）
+## API 服务部署（scripts/serve_openai_api.py）✅ 已完成
 
-学习计划见 `plan/serve_openai_api_study_plan.md`（已创建）
+学习计划见 `plan/serve_openai_api_study_plan.md`
 
-- [ ] 理解 init_model 的两条加载路径（原生 .pth vs HuggingFace 格式）
-- [ ] 理解 ChatRequest Pydantic 模型的作用
-- [ ] 理解 CustomStreamer + Queue + Thread 的流式生成机制
-- [ ] 理解 generate_stream_response 的 SSE 格式编码
-- [ ] 理解 chat_completions 流式/非流式双分支
-- [ ] 理解 __main__ 中 uvicorn 的启动方式
-- [ ] 对比 serve_openai_api.py 与 eval_llm.py 的差异
+- [✓] 理解 init_model 的两条加载路径（原生 .pth vs HuggingFace 格式）
+- [✓] 理解 ChatRequest Pydantic 模型的作用
+- [✓] 理解 CustomStreamer + Queue + Thread 的流式生成机制
+- [✓] 理解 generate_stream_response 的 SSE 格式编码
+- [✓] 理解 chat_completions 流式/非流式双分支
+- [✓] 理解 __main__ 中 uvicorn 的启动方式
+- [✓] 对比 serve_openai_api.py 与 eval_llm.py 的差异
+- [✓] 理解 `tools` 字段目前只是兼容占位，完整 function calling 还需要工具执行与多轮回注逻辑
+- [✓] 理解字符级 prompt 截断与 token 级截断之间的差异
+- [✓] 完成服务启动、非流式请求和流式 SSE 请求练习
+
+---
+
+## 下一个：OpenAI API 客户端（scripts/chat_openai_api.py）✅ 已完成
+
+学习计划见 `plan/chat_openai_api_study_plan.md`
+
+- [✓] 理解 OpenAI SDK 的 `base_url` 与兼容接口配置
+- [✓] 理解 `chat.completions.create()` 的请求参数映射
+- [✓] 理解非流式响应的 `message.content` 读取方式
+- [✓] 理解流式响应的 `chunk.choices[0].delta.content` 读取方式
+- [✓] 理解 `conversation_history` 的上下文维护与历史轮数截断
+- [✓] 对比 `stream=True` 与 `stream=False` 的客户端处理流程
+- [✓] 动手修改客户端：切换流式模式、调整历史轮数和生成参数
+
+---
+
+## 下一个：模型格式转换（scripts/convert_model.py）
+
+学习计划见 `plan/convert_model_study_plan.md`
+
+- [ ] 理解三种转换函数的定位与使用场景
+- [ ] 理解 MiniMind HF 格式 vs Llama HF 格式的区别
+- [ ] 理解 `register_for_auto_class()` 的作用
+- [ ] 理解 `strict=False` 在权重加载中的含义
+- [ ] 理解 SwiGLU 的 `intermediate_size` 计算公式
+- [ ] 理解 `tokenizer_config.json` 修补的原因
+- [ ] 理解 `safe_serialization` 与 `.bin` / `.safetensors` 的区别
+- [ ] 动手练习：运行转换并验证加载
+- [ ] 动手练习：用 argparse 改造 `__main__`
+
+
