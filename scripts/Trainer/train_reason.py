@@ -13,7 +13,7 @@ from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from scripts.Model.model_minimind import MiniMindConfig
-from dataset.lm_dataset import SFTDataset
+from scripts.Dataset.lm_dataset import SFTDataset
 from scripts.Trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
 
 warnings.filterwarnings('ignore')
@@ -89,7 +89,7 @@ def train_epoch(epoch, loader, iters, tokenizer, lm_config, start_step=0, wandb=
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind Reasoning Distillation")
-    parser.add_argument("--save_dir", type=str, default="out", help="模型保存目录")
+    parser.add_argument("--save_dir", type=str, default="models", help="模型保存目录")
     parser.add_argument('--save_weight', default='reason', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=8, help="batch size")
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=720, type=int, help="训练的最大截断长度（中文1token≈1.5~1.7字符）")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
-    parser.add_argument("--data_path", type=str, default="dataset/r1_mix_1024.jsonl", help="推理蒸馏数据路径")
+    parser.add_argument("--data_path", type=str, default="resource/minimind_dataset/r1_mix_1024.jsonl", help="推理蒸馏数据路径")
     parser.add_argument('--from_weight', default='dpo', type=str, help="基于哪个权重训练，默认dpo")
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_wandb", action="store_true", help="是否使用wandb")

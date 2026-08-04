@@ -13,7 +13,7 @@ from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from scripts.Model.model_minimind import MiniMindConfig
-from dataset.lm_dataset import SFTDataset
+from scripts.Dataset.lm_dataset import SFTDataset
 from scripts.Model.model_lora import save_lora, apply_lora
 from scripts.Trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
 
@@ -74,7 +74,7 @@ def train_epoch(epoch, loader, iters, lora_params, start_step=0, wandb=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind LoRA Fine-tuning")
-    parser.add_argument("--save_dir",        type=str, default="out/lora",          help="模型保存目录")
+    parser.add_argument("--save_dir",        type=str, default="models/lora",          help="模型保存目录")
     parser.add_argument("--lora_name",       type=str, default="lora_identity",        help="LoRA权重名称(如lora_identity/lora_medical等)")
     parser.add_argument("--epochs",          type=int, default=50,                     help="训练轮数")
     parser.add_argument("--batch_size",      type=int, default=32,                     help="每个step的batch size")
@@ -90,7 +90,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8,       type=int,              help="Transformer 层数")
     parser.add_argument('--max_seq_len',       default=340,     type=int,              help="训练的最大序列长度（中文约1.5~1.7字符/token）")
     parser.add_argument('--use_moe',           default=0,       type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
-    parser.add_argument("--data_path",       type=str, default="dataset/lora_identity.jsonl", help="LoRA 训练数据（jsonl 格式）")
+    parser.add_argument("--data_path",       type=str, default="resource/minimind_dataset/lora_identity.jsonl", help="LoRA 训练数据（jsonl 格式）")
     parser.add_argument('--from_weight',     default='full_sft', type=str,             help="基座权重名称（从该 checkpoint 加载初始参数）")
     parser.add_argument('--from_resume',     default=0,  type=int, choices=[0, 1],    help="是否自动检测 checkpoint 并续训（0=否，1=是）")
     parser.add_argument("--use_wandb",       action="store_true",                      help="启用 wandb / swanlab 实验记录")

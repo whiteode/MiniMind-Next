@@ -14,7 +14,7 @@ from torch import optim
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from scripts.Model.model_minimind import MiniMindConfig
-from dataset.lm_dataset import SFTDataset
+from scripts.Dataset.lm_dataset import SFTDataset
 from scripts.Trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
 
 warnings.filterwarnings('ignore')
@@ -128,7 +128,7 @@ def train_epoch(epoch, loader, iters, teacher_model, lm_config_student, start_st
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind Knowledge Distillation")
-    parser.add_argument("--save_dir", type=str, default="out", help="模型保存目录")
+    parser.add_argument("--save_dir", type=str, default="models", help="模型保存目录")
     parser.add_argument('--save_weight', default='full_dist', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=6, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=32, help="batch size")
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_interval", type=int, default=100, help="日志打印间隔")
     parser.add_argument("--save_interval", type=int, default=100, help="模型保存间隔")
     parser.add_argument("--max_seq_len", type=int, default=340, help="训练的最大截断长度（中文1token≈1.5~1.7字符）")
-    parser.add_argument("--data_path", type=str, default="dataset/sft_mini_512.jsonl", help="训练数据路径")
+    parser.add_argument("--data_path", type=str, default="resource/minimind_dataset/sft_t2t_mini.jsonl", help="训练数据路径")
     parser.add_argument('--student_hidden_size', default=512, type=int, help="学生模型隐藏层维度")
     parser.add_argument('--student_num_layers', default=8, type=int, help="学生模型隐藏层数量")
     parser.add_argument('--teacher_hidden_size', default=768, type=int, help="教师模型隐藏层维度")

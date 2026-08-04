@@ -115,7 +115,7 @@ def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoc
         return None
 
 
-def init_model(lm_config, from_weight='pretrain', tokenizer_path='scripts/Model', save_dir='out', device='cuda'):
+def init_model(lm_config, from_weight='pretrain', tokenizer_path='scripts/Model', save_dir='models', device='cuda'):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     model = MiniMindForCausalLM(lm_config)
 

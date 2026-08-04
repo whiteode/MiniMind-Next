@@ -69,7 +69,7 @@ def convert_transformers2torch(transformers_path, torch_path):
 
 if __name__ == '__main__':
     lm_config = MiniMindConfig(hidden_size=512, num_hidden_layers=8, max_seq_len=8192, use_moe=False)
-    torch_path = f"out/full_sft_{lm_config.hidden_size}{'_moe' if lm_config.use_moe else ''}.pth"
+    torch_path = f"models/full_sft_{lm_config.hidden_size}{'_moe' if lm_config.use_moe else ''}.pth"
     transformers_path = 'MiniMind2-Small'
     convert_torch2transformers_llama(torch_path, transformers_path)
     # # convert transformers to torch model

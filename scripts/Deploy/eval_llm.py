@@ -51,7 +51,7 @@ def init_model(args):
 def main():
     parser = argparse.ArgumentParser(description="MiniMind模型推理与对话")
     parser.add_argument('--load_from', default='scripts/Model', type=str, help="模型加载路径（model=原生torch权重，其他路径=transformers格式）")
-    parser.add_argument('--save_dir', default='out', type=str, help="模型权重目录")
+    parser.add_argument('--save_dir', default='models', type=str, help="模型权重目录")
     parser.add_argument('--weight', default='full_sft', type=str, help=(
         "权重名称前缀，用于指定加载哪一阶段训练出的模型权重。"
         "各选项含义：\n"
@@ -80,7 +80,7 @@ def main():
         "【这么多选项在 eval_llm.py 里却只用了 reason 和 pretrain 两个判断，那其他选项的意义在哪？】\n"
         "  --weight 最核心的作用不是控制 if 分支，而是定位权重文件（init_model 第 36 行）：\n"
         "    ckp = f'./{args.save_dir}/{args.weight}_{args.hidden_size}{moe_suffix}.pth'\n"
-        "    例如 --weight full_sft --hidden_size 512  → 加载 ./out/full_sft_512.pth\n"
+        "    例如 --weight full_sft --hidden_size 512  → 加载 ./models/full_sft_512.pth\n"
         "    例如 --weight rlhf --hidden_size 768      → 加载 ./out/rlhf_768.pth\n"
         "    例如 --weight reason --hidden_size 640 --use_moe 1  → 加载 ./out/reason_640_moe.pth\n"
         "  所有选项对应的权重文件都可以通过训练脚本生成（train_pretrain.py / train_full_sft.py / 等），\n"

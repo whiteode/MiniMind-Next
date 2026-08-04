@@ -161,7 +161,7 @@ async def chat_completions(request: ChatRequest):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Server for MiniMind")
     parser.add_argument('--load_from', default='scripts/Model', type=str, help="模型加载路径（model=原生torch权重，其他路径=transformers格式）")
-    parser.add_argument('--save_dir', default='out', type=str, help="模型权重目录")
+    parser.add_argument('--save_dir', default='models', type=str, help="模型权重目录")
     parser.add_argument('--weight', default='full_sft', type=str, help=(
         "权重名称前缀，用于指定加载哪一阶段训练出的模型权重。"
         "各选项含义：\n"
