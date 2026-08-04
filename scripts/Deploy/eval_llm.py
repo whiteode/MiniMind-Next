@@ -1,19 +1,23 @@
+import os
+import sys
 import time
 import argparse
 import random
 import warnings
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
-from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
-from model.model_lora import *
-from trainer.trainer_utils import setup_seed, get_model_params
+
+sys.path.insert(0, os.getcwd())
+from scripts.Model.model_minimind import MiniMindConfig, MiniMindForCausalLM
+from scripts.Model.model_lora import *
+from scripts.Trainer.trainer_utils import setup_seed, get_model_params
 
 warnings.filterwarnings('ignore')
 
 def init_model(args):
     tokenizer = AutoTokenizer.from_pretrained(args.load_from)
     
-    if 'model' in args.load_from:
+    if 'model' in args.load_from.lower():
         config = MiniMindConfig(
             hidden_size=args.hidden_size,
             num_hidden_layers=args.num_hidden_layers,
@@ -33,7 +37,7 @@ def init_model(args):
                 apply_lora(model)
                 load_lora(model, f'./{args.save_dir}/lora/{args.lora_weight}_{args.hidden_size}.pth')
             else:
-                from model.model_lora import apply_lora_multi, load_lora_multi
+                from scripts.Model.model_lora import apply_lora_multi, load_lora_multi
                 apply_lora_multi(model, ranks=[8] * len(lora_names))
                 paths = [f'./{args.save_dir}/lora/{name}_{args.hidden_size}.pth' for name in lora_names]
                 load_lora_multi(model, paths)
@@ -46,7 +50,7 @@ def init_model(args):
 
 def main():
     parser = argparse.ArgumentParser(description="MiniMind模型推理与对话")
-    parser.add_argument('--load_from', default='model', type=str, help="模型加载路径（model=原生torch权重，其他路径=transformers格式）")
+    parser.add_argument('--load_from', default='scripts/Model', type=str, help="模型加载路径（model=原生torch权重，其他路径=transformers格式）")
     parser.add_argument('--save_dir', default='out', type=str, help="模型权重目录")
     parser.add_argument('--weight', default='full_sft', type=str, help=(
         "权重名称前缀，用于指定加载哪一阶段训练出的模型权重。"

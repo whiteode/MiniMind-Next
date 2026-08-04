@@ -1,8 +1,7 @@
 import os
 import sys
 
-__package__ = "trainer"
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.getcwd())
 
 import argparse
 import time
@@ -14,9 +13,9 @@ from contextlib import nullcontext
 from torch import optim
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
-from model.model_minimind import MiniMindConfig
+from scripts.Model.model_minimind import MiniMindConfig
 from dataset.lm_dataset import DPODataset
-from trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
+from scripts.Trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
 
 warnings.filterwarnings('ignore')
 
@@ -116,7 +115,7 @@ def train_epoch(epoch, loader, iters, ref_model, lm_config, start_step=0, wandb=
             torch.save({k: v.half().cpu() for k, v in state_dict.items()}, ckp)
             lm_checkpoint(lm_config, weight=args.save_weight, model=model,
                           optimizer=optimizer, scaler=scaler, epoch=epoch,
-                          step=step, wandb=wandb, save_dir='../checkpoints')
+                          step=step, wandb=wandb, save_dir='checkpoints')
             model.train()
             del state_dict
 
@@ -126,7 +125,7 @@ def train_epoch(epoch, loader, iters, ref_model, lm_config, start_step=0, wandb=
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind DPO (Direct Preference Optimization)")
-    parser.add_argument("--save_dir",          type=str, default="../out",             help="模型保存目录")
+    parser.add_argument("--save_dir",          type=str, default="out",             help="模型保存目录")
     parser.add_argument('--save_weight',       default='dpo',            type=str,    help="保存权重的前缀名")
     parser.add_argument("--epochs",            type=int, default=1,                    help="训练轮数（DPO 通常只需 1 epoch）")
     parser.add_argument("--batch_size",        type=int, default=4,                    help="batch size（注意 chosen+rejected 拼接后显存翻倍）")
@@ -142,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8,       type=int,              help="Transformer 层数")
     parser.add_argument('--max_seq_len',       default=1024,    type=int,              help="训练的最大序列长度（DPO 通常需要比 SFT 更长的序列）")
     parser.add_argument('--use_moe',           default=0,       type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
-    parser.add_argument("--data_path",         type=str, default="../dataset/dpo.jsonl", help="DPO训练数据路径（含 chosen/rejected 对）")
+    parser.add_argument("--data_path",         type=str, default="dataset/dpo.jsonl", help="DPO训练数据路径（含 chosen/rejected 对）")
     parser.add_argument('--from_weight',       default='full_sft', type=str,            help="基于哪个权重训练（通常是 full_sft 或 lora_xxx）")
     parser.add_argument('--from_resume',       default=0,  type=int, choices=[0, 1],  help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument('--beta',              default=0.1, type=float,                help="DPO loss 中的 beta 温度参数")
@@ -161,7 +160,7 @@ if __name__ == "__main__":
                                num_hidden_layers=args.num_hidden_layers,
                                use_moe=bool(args.use_moe))
     ckp_data = lm_checkpoint(lm_config, weight=args.save_weight,
-                             save_dir='../checkpoints') if args.from_resume == 1 else None
+                             save_dir='checkpoints') if args.from_resume == 1 else None
 
     device_type = "cuda" if "cuda" in args.device else "cpu"
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16

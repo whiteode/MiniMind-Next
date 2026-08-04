@@ -6,7 +6,7 @@ sys.path.insert(0, os.getcwd())
 import torch
 import warnings
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaConfig, LlamaForCausalLM
-from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
+from scripts.Model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
@@ -23,7 +23,7 @@ def convert_torch2transformers_minimind(torch_path, transformers_path, dtype=tor
     model_params = sum(p.numel() for p in lm_model.parameters() if p.requires_grad)
     print(f'模型参数: {model_params / 1e6} 百万 = {model_params / 1e9} B (Billion)')
     lm_model.save_pretrained(transformers_path, safe_serialization=False)
-    tokenizer = AutoTokenizer.from_pretrained('model/')
+    tokenizer = AutoTokenizer.from_pretrained('scripts/Model/')
     tokenizer.save_pretrained(transformers_path)
     # 兼容transformers-5.0的写法
     config_path = os.path.join(transformers_path, "tokenizer_config.json")
@@ -53,7 +53,7 @@ def convert_torch2transformers_llama(torch_path, transformers_path, dtype=torch.
     llama_model.save_pretrained(transformers_path)
     model_params = sum(p.numel() for p in llama_model.parameters() if p.requires_grad)
     print(f'模型参数: {model_params / 1e6} 百万 = {model_params / 1e9} B (Billion)')
-    tokenizer = AutoTokenizer.from_pretrained('model/')
+    tokenizer = AutoTokenizer.from_pretrained('scripts/Model/')
     tokenizer.save_pretrained(transformers_path)
     # 兼容transformers-5.0的写法
     config_path = os.path.join(transformers_path, "tokenizer_config.json")
