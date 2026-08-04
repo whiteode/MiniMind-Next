@@ -1,6 +1,6 @@
 # convert_model.py 学习计划
 
-> **文件位置**: `scripts/convert_model.py`（77 行）
+> **文件位置**: `scripts/Tools/convert_model.py`（77 行）
 > **角色**: 在 PyTorch 原生权重（`.pth`）与 HuggingFace Transformers 格式之间互相转换
 > **前置知识**: `model_minimind.py`（模型架构）、已完成至少一个训练阶段（有 `.pth` 权重）
 
@@ -49,7 +49,7 @@ ls ../model/
 cd /mnt/data_2t_0/Projects/minimind
 
 # 直接运行（默认配置：hidden_size=512, 8层, 非MoE）
-python scripts/convert_model.py
+python scripts/Tools/convert_model.py
 ```
 
 默认行为：
@@ -65,7 +65,7 @@ python scripts/convert_model.py
 # 例如转换 768 hidden_size 的模型
 # 编辑第 72 行: hidden_size=768, num_hidden_layers=16
 # 编辑第 74 行: transformers_path = '../MiniMind2-Base'
-python scripts/convert_model.py
+python scripts/Tools/convert_model.py
 ```
 
 ### 1.4 转换后验证
@@ -349,7 +349,7 @@ torch_path = "../out/grpo_512.pth"       # GRPO 权重
 
 ### 基础练习
 
-1. **运行转换**：执行 `python scripts/convert_model.py`，查看输出的 `../MiniMind2-Small/` 目录结构
+1. **运行转换**：执行 `python scripts/Tools/convert_model.py`，查看输出的 `../MiniMind2-Small/` 目录结构
 
 2. **验证加载**：编写 Python 脚本，用 `AutoModelForCausalLM.from_pretrained` 加载转换后的模型，输入一段文本测试推理是否正常
 

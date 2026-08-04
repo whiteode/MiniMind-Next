@@ -1,6 +1,6 @@
 # serve_openai_api.py 学习计划
 
-> **文件位置**: `scripts/serve_openai_api.py`（197 行）
+> **文件位置**: `scripts/Deploy/serve_openai_api.py`（197 行）
 > **角色**: 把训练好的 MiniMind 模型封装成 OpenAI 兼容的 API 服务，支持流式和非流式推理
 > **前置知识**: 已学完 eval_llm.py（了解模型加载和 generate 参数）、model_minimind.py（模型架构）、model_lora.py（LoRA 加载）
 

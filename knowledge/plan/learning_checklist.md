@@ -267,7 +267,7 @@
 
 ---
 
-## API 服务部署（scripts/serve_openai_api.py）✅ 已完成
+## API 服务部署（scripts/Deploy/serve_openai_api.py）✅ 已完成
 
 学习计划见 `plan/serve_openai_api_study_plan.md`
 
@@ -284,7 +284,7 @@
 
 ---
 
-## 下一个：OpenAI API 客户端（scripts/chat_openai_api.py）✅ 已完成
+## 下一个：OpenAI API 客户端（scripts/Deploy/chat_openai_api.py）✅ 已完成
 
 学习计划见 `plan/chat_openai_api_study_plan.md`
 
@@ -298,7 +298,7 @@
 
 ---
 
-## 下一个：模型格式转换（scripts/convert_model.py）
+## 下一个：模型格式转换（scripts/Tools/convert_model.py）
 
 学习计划见 `plan/convert_model_study_plan.md`
 

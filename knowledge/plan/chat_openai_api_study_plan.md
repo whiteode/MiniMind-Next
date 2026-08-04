@@ -1,6 +1,6 @@
 # chat_openai_api.py 学习计划
 
-> **文件位置**: `scripts/chat_openai_api.py`（33 行）
+> **文件位置**: `scripts/Deploy/chat_openai_api.py`（33 行）
 > **角色**: 用 OpenAI Python SDK 向 serve_openai_api.py 发请求的客户端，支持流式/非流式对话
 > **前置知识**: 已学完 serve_openai_api.py（理解服务端接口）、eval_llm.py（理解对话流程）
 

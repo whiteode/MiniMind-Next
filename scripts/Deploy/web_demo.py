@@ -169,11 +169,11 @@ if model_source == "API":
     slogan = f"Hi, I'm {api_model_name}"
 else:
     MODEL_PATHS = {
-        "MiniMind2-R1 (0.1B)": ["../MiniMind2-R1", "MiniMind2-R1"],
-        "MiniMind2-Small-R1 (0.02B)": ["../MiniMind2-Small-R1", "MiniMind2-Small-R1"],
-        "MiniMind2 (0.1B)": ["../MiniMind2", "MiniMind2"],
-        "MiniMind2-MoE (0.15B)": ["../MiniMind2-MoE", "MiniMind2-MoE"],
-        "MiniMind2-Small (0.02B)": ["../MiniMind2-Small", "MiniMind2-Small"]
+        "MiniMind2-R1 (0.1B)": ["MiniMind2-R1", "MiniMind2-R1"],
+        "MiniMind2-Small-R1 (0.02B)": ["MiniMind2-Small-R1", "MiniMind2-Small-R1"],
+        "MiniMind2 (0.1B)": ["MiniMind2", "MiniMind2"],
+        "MiniMind2-MoE (0.15B)": ["MiniMind2-MoE", "MiniMind2-MoE"],
+        "MiniMind2-Small (0.02B)": ["MiniMind2-Small", "MiniMind2-Small"]
     }
 
     selected_model = st.sidebar.selectbox('Models', list(MODEL_PATHS.keys()), index=2)  # 默认选择 MiniMind2

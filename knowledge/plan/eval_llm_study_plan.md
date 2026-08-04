@@ -179,7 +179,7 @@ eval_llm.py
  ├─ model/model_minimind.py      ← 模型定义（MiniMindForCausalLM）
  ├─ model/model_lora.py           ← LoRA 注入逻辑
  ├─ trainer/trainer_utils.py      ← setup_seed, get_model_params
- ├─ scripts/serve_openai_api.py   ← OpenAI 兼容 API 版推理（相近逻辑）
+ ├─ scripts/Deploy/serve_openai_api.py   ← OpenAI 兼容 API 版推理（相近逻辑）
  ├─ trainer/train_full_sft.py     ← full_sft 训练脚本
  ├─ trainer/train_pretrain.py     ← pretrain 训练脚本
  ├─ trainer/train_ppo.py          ← RLHF-PPO 训练脚本
@@ -466,7 +466,7 @@ class CustomStreamer(TextStreamer):
 
 ---
 
-**8. 对比 `scripts/serve_openai_api.py` 中的 `init_model` 与 `eval_llm.py` 的 `init_model`**
+**8. 对比 `scripts/Deploy/serve_openai_api.py` 中的 `init_model` 与 `eval_llm.py` 的 `init_model`**
 
 两边的 `init_model` 核心逻辑几乎相同（都是 `'model' in load_from` 分支判断），差异点：
 

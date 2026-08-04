@@ -1,6 +1,6 @@
 # web_demo.py 学习计划
 
-> **文件位置**: `scripts/web_demo.py`（328 行）
+> **文件位置**: `scripts/Deploy/web_demo.py`（328 行）
 > **角色**: 基于 Streamlit 的交互式 Web 聊天界面，支持本地模型和 API 两种模式
 > **前置知识**: 已学完 `eval_llm.py`（对话流程）、`serve_openai_api.py`（API 服务端）、`chat_openai_api.py`（API 客户端）
 
@@ -59,10 +59,10 @@ streamlit --version
 ```bash
 # 从项目根目录运行
 cd /mnt/data_2t_0/Projects/minimind
-streamlit run scripts/web_demo.py
+streamlit run scripts/Deploy/web_demo.py
 
 # 或指定端口
-streamlit run scripts/web_demo.py --server.port 8501
+streamlit run scripts/Deploy/web_demo.py --server.port 8501
 ```
 
 启动后在浏览器打开 `http://localhost:8501`。
@@ -76,13 +76,11 @@ streamlit run scripts/web_demo.py --server.port 8501
 先启动 API 服务，再启动 Web 界面，两者通过 HTTP 通信。
 
 ```bash
-# 终端 1：启动 API 服务
-cd trainer/
-python ../scripts/serve_openai_api.py --weight full_sft --hidden_size 512
+# 终端 1：启动 API 服务（在项目根目录运行）
+python scripts/Deploy/serve_openai_api.py --weight full_sft --hidden_size 512
 
-# 终端 2：启动 Web 界面
-cd /mnt/data_2t_0/Projects/minimind
-streamlit run scripts/web_demo.py
+# 终端 2：启动 Web 界面（在项目根目录运行）
+streamlit run scripts/Deploy/web_demo.py
 ```
 
 Web 界面侧边栏选择"API"→ 填入 API URL（默认 `http://127.0.0.1:8000/v1`）、Model ID（默认 `minimind`）、Model Name（默认 `MiniMind2`）→ 开始聊天。
@@ -243,7 +241,7 @@ MODEL_PATHS = {
 - value[1]：模型名称标识（用于判断是否为 R1 模型）
 - 默认选择 `index=2`（MiniMind2 0.1B）
 
-> **注意**：这些 HuggingFace 格式的模型需要通过 `scripts/convert_model.py` 转换得到，或是从 HuggingFace 下载的独立仓库。这些路径是**示例路径**，实际使用需要根据你的模型存放位置修改。
+> **注意**：这些 HuggingFace 格式的模型需要通过 `scripts/Tools/convert_model.py` 转换得到，或是从 HuggingFace 下载的独立仓库。这些路径是**示例路径**，实际使用需要根据你的模型存放位置修改。
 
 ---
 
@@ -657,7 +655,7 @@ Streamlit 在每次交互时重新执行整个脚本，但 `st.session_state` �
 
 ### Q11: 路径问题
 
-如果从项目根目录运行 `streamlit run scripts/web_demo.py`，脚本的 `__file__` 是 `scripts/web_demo.py`，但 `MODEL_PATHS` 中的 `../MiniMind2` 是相对于**运行目录**（项目根目录）解析的，实际上是 `./MiniMind2`。而`TextIteratorStreamer` 的 `from_pretrained` 使用相对路径时，也是相对于 CWD。所以如果 `../MiniMind2` 目录存不存在取决于模型是否已下载到项目根目录。
+如果从项目根目录运行 `streamlit run scripts/Deploy/web_demo.py`，脚本的 `__file__` 是 `scripts/Deploy/web_demo.py`，但 `MODEL_PATHS` 中的 `../MiniMind2` 是相对于**运行目录**（项目根目录）解析的，实际上是 `./MiniMind2`。而`TextIteratorStreamer` 的 `from_pretrained` 使用相对路径时，也是相对于 CWD。所以如果 `../MiniMind2` 目录存不存在取决于模型是否已下载到项目根目录。
 
 > 这种硬编码的相对路径是设计上的缺陷——最佳实践应该是用命令行参数或环境变量指定模型路径。
 
