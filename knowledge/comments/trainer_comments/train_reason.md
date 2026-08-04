@@ -49,7 +49,7 @@
 例如 tokenizer('<think>').input_ids 可能返回 [101, 205, 102]
 这些整数 ID 会被模型用作输入或参与 loss 计算，后续用于对特殊 token 施加额外权重
 reduction='none' 表示不对 loss 求和或求平均，保留每个 token 的 loss 值
-input_ids 和 labels 由 SFTDataset（dataset/lm_dataset.py）构造：
+input_ids 和 labels 由 SFTDataset（scripts/Dataset/lm_dataset.py）构造：
   - input_ids: 原始对话文本经 tokenizer 编码为 token ID 序列，不足 max_length 的部分用 pad_token_id 右侧补齐
   - labels: 全量初始化为 -100，然后扫描序列，仅在 assistant 的回答区间（bos_id ~ eos_id 之间）
     将 label 设为对应位置的 token ID；其余位置（system/user 的文本、padding）保留 -100

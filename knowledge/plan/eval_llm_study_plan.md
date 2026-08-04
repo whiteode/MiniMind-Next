@@ -48,7 +48,7 @@ from scripts.Trainer.trainer_utils import setup_seed, get_model_params
 load_from
  ├─ 包含 "model" → 加载自定义 MiniMind 权重（.pth 文件）
  │   ├─ 根据 hidden_size / num_hidden_layers / use_moe 实例化配置
- │   ├─ 从 ./out/{weight}_{hidden_size}[_moe].pth 读取 state_dict
+ │   ├─ 从 ./models/{weight}_{hidden_size}[_moe].pth 读取 state_dict
  │   └─ 若指定 lora_weight → 注入 LoRA 并加载 LoRA 权重
  └─ 不包含 "model" → 用 transformers 加载 HF 格式权重
 ```
@@ -70,7 +70,7 @@ load_from
 | 参数 | 默认值 | 作用 |
 |------|--------|------|
 | `--load_from` | `model` | 选择加载路径（原生权重 vs HF 格式） |
-| `--save_dir` | `out` | 权重存放目录 |
+| `--save_dir` | `models` | 权重存放目录 |
 | `--weight` | `full_sft` | 权重阶段选择 |
 | `--lora_weight` | `None` | 可选 LoRA 权重名 |
 | `--hidden_size` | `512` | 模型维度（定模型大小） |

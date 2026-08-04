@@ -250,7 +250,7 @@
 
 ---
 
-## 数据集加载（dataset/lm_dataset.py）✅ 已完成
+## 数据集加载（scripts/Dataset/lm_dataset.py）✅ 已完成
 
 学习计划见 `plan/lm_dataset_study_plan.md`（已更新）
 

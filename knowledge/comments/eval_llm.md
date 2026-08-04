@@ -41,7 +41,7 @@ Transformer 层数
 是否启用 MoE (混合专家架构)
 是否开启 RoPE 位置编码外推
 2. 根据配置初始化模型结构
-3. 拼接权重文件的完整路径（例如: ./out/full_sft_512.pth 或 ./out/full_sft_640_moe.pth）
+3. 拼接权重文件的完整路径（例如: ./models/full_sft_512.pth 或 ./models/full_sft_640_moe.pth）
 4. 加载 state_dict 并注入到模型中，strict=True 要求结构与权重完全匹配
 5. 如果指定了 LoRA 权重，则动态为模型注入 LoRA 层并加载对应的 LoRA 权重
 如果路径里不包含 'model'，则视其为标准的 Hugging Face 格式，直接通过 transformers 库加载
@@ -390,7 +390,7 @@ attention_mask 在 prefill 阶段怎么用？
 1. init_model() 里有两个分支，判断条件是什么？各走什么路径？
    答：判断条件是 if 'model' in args.load_from。
      包含 "model"  → 原生 MiniMind 路径：MiniMindConfig + MiniMindForCausalLM 实例化，
-                    从 ./out/{weight}_{hidden_size}[_moe].pth 加载 state_dict，可选 LoRA。
+                    从 ./models/{weight}_{hidden_size}[_moe].pth 加载 state_dict，可选 LoRA。
                     训练产出的就是这种格式，开发阶段直接加载，速度快、无额外转换。
      不包含 "model" → HF 路径：AutoModelForCausalLM.from_pretrained() 直接加载完整模型。
                      MiniMind 支持将权重导出为 HuggingFace 格式（带 config.json / pytorch_model.bin），
@@ -590,7 +590,7 @@ attention_mask 在 prefill 阶段怎么用？
    答：--weight pretrain 指定加载 pretrain 权重，--use_moe 1 启用 MoE 架构。
      命令行示例：
        python scripts/Deploy/eval_llm.py --weight pretrain --use_moe 1 --hidden_size 640
-     --weight pretrain 定位权重文件 ./out/pretrain_640_moe.pth（见 init_model 第 36 行拼接逻辑），
+     --weight pretrain 定位权重文件 ./models/pretrain_640_moe.pth（见 init_model 第 36 行拼接逻辑），
      --use_moe 1 控制模型初始化时是否使用 MoE 架构（MiniMindConfig 的 use_moe 字段）。
 11. 在端侧部署时输入形状必须固定，attention_mask 如何配合解决这个问题？
    答：端侧部署时输入形状必须固定（如 seq_len=128），通过 padding 补齐。

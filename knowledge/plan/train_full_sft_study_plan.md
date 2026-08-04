@@ -195,7 +195,7 @@ def init_model(lm_config, from_weight, device):
     model = MiniMindForCausalLM(lm_config)           # ① 创建随机初始化的模型
     tokenizer = AutoTokenizer.from_pretrained(...)    # ② 加载 tokenizer
     if from_weight != 'none':                         # ③ 如果要加载权重
-        weight_path = f'../out/{from_weight}_{lm_config.hidden_size}.pth'
+        weight_path = f'../models/{from_weight}_{lm_config.hidden_size}.pth'
         state_dict = torch.load(weight_path, map_location=device)
         model.load_state_dict(state_dict, strict=False)  # ④ 覆盖模型参数
     return model, tokenizer
@@ -205,8 +205,8 @@ def init_model(lm_config, from_weight, device):
 
 1. 创建一个全新的 `MiniMindForCausalLM` 实例（参数随机初始化）
 2. 检查 `from_weight` 参数：
-   - `from_weight='pretrain'`（默认）→ 加载 `../out/pretrain_512.pth`
-   - `from_weight='full_sft'` → 加载 `../out/full_sft_512.pth`
+   - `from_weight='pretrain'`（默认）→ 加载 `../models/pretrain_512.pth`
+   - `from_weight='full_sft'` → 加载 `../models/full_sft_512.pth`
    - `from_weight='none'` → 不加载任何权重，保持随机初始化
 3. `strict=False` 允许权重不完全匹配（如增减层时忽略不存在的 key）
 
@@ -291,7 +291,7 @@ SFT 的训练目标不是"学会看懂用户问题"，而是"学会在给定的�
 ```
 train_full_sft.py
  ├─ scripts/Model/model_minimind.py       ← 模型定义（和 pretrain 一样）
- ├─ dataset/lm_dataset.py          ← SFTDataset（重点学习 generate_labels）
+ ├─ scripts/Dataset/lm_dataset.py          ← SFTDataset（重点学习 generate_labels）
  ├─ scripts/Trainer/trainer_utils.py       ← 工具函数（和 pretrain 一样）
  └─ plan/train_pretrain_study_plan.md ← 之前的学习笔记，作为对比参考
 ```

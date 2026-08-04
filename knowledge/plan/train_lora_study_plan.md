@@ -151,7 +151,7 @@ forward_with_lora(x):
 | `--batch_size` | 16 | 32（显存占用小，可以更大） |
 | `--learning_rate` | 1e-6 | 1e-4（LoRA 可以更大） |
 | `--from_weight` | `pretrain` | `full_sft`（基于 SFT 权重） |
-| `save_dir` | `../out` | `../out/lora` |
+| `save_dir` | `../models` | `../models/lora` |
 | 数据集 | `sft_mini_512.jsonl` | `lora_identity.jsonl`（通常是单任务小数据集） |
 
 ### 3.7 LoRA 权重加载（推理）
@@ -460,7 +460,7 @@ def load_lora_multi(model, paths, merge_weights=None):
 train_lora.py
  ├─ scripts/Model/model_lora.py            ← LoRA 模块定义、注入、保存（核心）
  ├─ scripts/Model/model_minimind.py         ← 被注入 LoRA 的目标模型
- ├─ dataset/lm_dataset.py           ← SFTDataset（和 full SFT 完全一样）
+ ├─ scripts/Dataset/lm_dataset.py           ← SFTDataset（和 full SFT 完全一样）
  ├─ scripts/Trainer/trainer_utils.py        ← 工具函数（和 full SFT 完全一样）
  ├─ scripts/Trainer/train_full_sft.py       ← 对比参考：full SFT 实现
  └─ plan/train_full_sft_study_plan.md ← 之前的学习笔记

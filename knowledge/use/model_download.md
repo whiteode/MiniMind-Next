@@ -15,8 +15,8 @@ git clone https://www.modelscope.cn/models/gongjy/MiniMind2-PyTorch.git
 pip install modelscope
 python -c "from modelscope import snapshot_download; snapshot_download('gongjy/MiniMind2-PyTorch', cache_dir='./MiniMind2-PyTorch')"
 
-# 将 .pth 文件复制到 ./out/ 目录
-cp MiniMind2-PyTorch/*.pth ./out/
+# 将 .pth 文件复制到 ./models/ 目录
+cp MiniMind2-PyTorch/*.pth ./models/
 ```
 
 对应 `--weight pretrain / full_sft / reason / rlhf / ppo_actor / grpo / spo` 等选项。下载后直接运行：

@@ -712,11 +712,11 @@ def generate_stream_response(messages, temperature, top_p, max_tokens):
 ## 第七章：启动方式
 
 ```bash
-# 1. 原生 .pth 权重（默认路径 ../scripts/Model/ + ../out/）
+# 1. 原生 .pth 权重（默认路径 ../scripts/Model/ + ../models/）
 python serve_openai_api.py --weight full_sft --hidden_size 512
 
 # 2. HuggingFace 格式权重
-python serve_openai_api.py --load_from ../out/hf_model
+python serve_openai_api.py --load_from ../models/hf_model
 
 # 3. 带 LoRA
 python serve_openai_api.py --weight full_sft --lora_weight lora_medical

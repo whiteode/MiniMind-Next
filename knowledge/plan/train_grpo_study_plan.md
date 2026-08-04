@@ -179,7 +179,7 @@ completion_mask = (arange <= eos_idx.unsqueeze(1)).int()   # EOS 之后的位置
 
 ### 2.5 数据准备
 
-GRPO 使用 `RLAIFDataset`（dataset/lm_dataset.py:242-276），返回结构：
+GRPO 使用 `RLAIFDataset`（scripts/Dataset/lm_dataset.py:242-276），返回结构：
 ```python
 {'prompt': "对话历史（不含assistant回复）", 'answer': "标准答案（用于参考）"}
 ```
@@ -275,7 +275,7 @@ L_policy = -E[ exp(π/sg(π)) × A - β × (exp(Δ) - Δ - 1) ]
 
 ### 第 1 层：导入与参数定义
 
-- `from dataset.lm_dataset import RLAIFDataset` → 仅返回 prompt 字符串，无 labels
+- `from scripts.Dataset.lm_dataset import RLAIFDataset` → 仅返回 prompt 字符串，无 labels
 - `--num_generations`（默认 8）：每个 prompt 生成的回答数，GRPO 的核心超参
 - `--beta`（默认 0.02）：KL 惩罚系数
 - `--reasoning`（默认 1）：是否启用推理格式奖励
@@ -534,7 +534,7 @@ L_policy = -E[ exp(π/sg(π)) × A - β × (exp(Δ) - Δ - 1) ]
 ```
 train_grpo.py
  ├─ scripts/Model/model_minimind.py              ← Policy 和 Ref 共用的模型定义
- ├─ dataset/lm_dataset.py                ← RLAIFDataset（prompt 数据集）
+ ├─ scripts/Dataset/lm_dataset.py                ← RLAIFDataset（prompt 数据集）
  ├─ scripts/Trainer/trainer_utils.py             ← 工具函数（init_model, SkipBatchSampler 等）
  ├─ scripts/Trainer/train_dpo.py                 ← 前置对比：DPO 的实现（2.6 节有 PPO/GRPO/DPO 详细对比）
  ├─ scripts/Trainer/train_reason.py              ← 前置依赖：产出的 reason.pth 是 GRPO 的默认起点

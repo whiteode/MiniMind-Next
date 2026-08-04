@@ -458,7 +458,7 @@ if wandb:
 ### 5.1 代码拆解
 
 ```python
-def init_model(lm_config, from_weight='pretrain', tokenizer_path='../model', save_dir='../out', device='cuda'):
+def init_model(lm_config, from_weight='pretrain', tokenizer_path='../model', save_dir='../models', device='cuda'):
     # 1. 加载分词器
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 

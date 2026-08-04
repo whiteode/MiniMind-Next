@@ -311,7 +311,7 @@ DPO 的学习率非常小（默认 `4e-8`），注释写"建议 <=5e-8 避免遗
 
 ### 第 1 层：导入与参数定义
 
-- `from dataset.lm_dataset import DPODataset` → DPO 专用数据集
+- `from scripts.Dataset.lm_dataset import DPODataset` → DPO 专用数据集
 - `--beta`（默认 0.1）：DPO loss 中的温度参数，控制"拉开差距"的力度
 - `--learning_rate`（默认 4e-8）：极小学习率，这是 DPO 的关键特征
 
@@ -427,7 +427,7 @@ DPO 的学习率非常小（默认 `4e-8`），注释写"建议 <=5e-8 避免遗
 ```
 train_dpo.py
  ├─ scripts/Model/model_minimind.py         ← policy 和 ref 共用的模型定义
- ├─ dataset/lm_dataset.py            ← DPODataset（偏好数据加载 + loss mask）
+ ├─ scripts/Dataset/lm_dataset.py            ← DPODataset（偏好数据加载 + loss mask）
  ├─ scripts/Trainer/trainer_utils.py         ← 工具函数
  └─ plan/train_lora_study_plan.md   ← 前置学习：LoRA 微调
 ```

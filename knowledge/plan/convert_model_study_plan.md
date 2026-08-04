@@ -22,7 +22,7 @@ convert_model.py
 │
 └── __main__
     ├── 定义 lm_config (hidden_size=512, 8层, 非 MoE)
-    ├── 设置 .pth 路径 → ../out/full_sft_512.pth
+    ├── 设置 .pth 路径 → ../models/full_sft_512.pth
     ├── 设置输出路径 → ../MiniMind2-Small
     └── 调用 convert_torch2transformers_llama()
 ```
@@ -35,7 +35,7 @@ convert_model.py
 
 ```bash
 # 确认已训练出 .pth 权重文件
-ls ../out/
+ls ../models/
 # 应看到类似: pretrain_512.pth  full_sft_512.pth  dpo_512.pth  ...
 
 # 确认有 tokenizer 文件
@@ -53,7 +53,7 @@ python scripts/Tools/convert_model.py
 ```
 
 默认行为：
-- 输入：`../out/full_sft_512.pth`
+- 输入：`../models/full_sft_512.pth`
 - 输出：`../MiniMind2-Small/`（LlamaForCausalLM 格式，兼容第三方生态）
 - 精度：`float16`
 
@@ -305,7 +305,7 @@ if __name__ == '__main__':
 ```python
 if __name__ == '__main__':
     lm_config = MiniMindConfig(hidden_size=512, num_hidden_layers=8, max_seq_len=8192, use_moe=False)
-    torch_path = f"../out/full_sft_{lm_config.hidden_size}{'_moe' if lm_config.use_moe else ''}.pth"
+    torch_path = f"../models/full_sft_{lm_config.hidden_size}{'_moe' if lm_config.use_moe else ''}.pth"
     transformers_path = '../MiniMind2-Small'
     convert_torch2transformers_llama(torch_path, transformers_path)
     # # convert transformers to torch model
@@ -320,15 +320,15 @@ if __name__ == '__main__':
 **如果要转换 MoE 模型**：
 ```python
 lm_config = MiniMindConfig(hidden_size=640, num_hidden_layers=8, max_seq_len=8192, use_moe=True)
-torch_path = f"../out/full_sft_640_moe.pth"
+torch_path = f"../models/full_sft_640_moe.pth"
 transformers_path = '../MiniMind2-MoE'
 ```
 
 **如果要转换其他阶段权重**：
 ```python
-torch_path = "../out/dpo_512.pth"        # DPO 权重
+torch_path = "../models/dpo_512.pth"        # DPO 权重
 # 或
-torch_path = "../out/grpo_512.pth"       # GRPO 权重
+torch_path = "../models/grpo_512.pth"       # GRPO 权重
 ```
 
 ---
@@ -373,7 +373,7 @@ torch_path = "../out/grpo_512.pth"       # GRPO 权重
 
 10. **safetensors 支持**：将 `safe_serialization` 改为可配置，支持输出 `.safetensors` 格式（更安全、更快加载）
 
-11. **批量转换脚本**：写一个脚本遍历 `out/` 目录下的所有 `.pth` 文件，批量转换为 Llama HF 格式，每个权重保存到独立的目录
+11. **批量转换脚本**：写一个脚本遍历 `models/` 目录下的所有 `.pth` 文件，批量转换为 Llama HF 格式，每个权重保存到独立的目录
 
 ---
 

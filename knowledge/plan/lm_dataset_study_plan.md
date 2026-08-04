@@ -1,6 +1,6 @@
 # lm_dataset.py 学习计划
 
-> **文件位置**: `dataset/lm_dataset.py`（278 行）
+> **文件位置**: `scripts/Dataset/lm_dataset.py`（278 行）
 > **角色**: 所有训练脚本的数据管道——把原始 JSONL 文本变成模型能吃的 Tensor
 > **前置知识**: 已学完 model_minimind.py、trainer_utils.py、所有 train_*.py
 

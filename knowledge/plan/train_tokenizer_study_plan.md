@@ -636,7 +636,7 @@ ByteLevel 的选择是：**放弃预分词的语言特殊性，把所有文字�
 
 ```
 train_tokenizer.py
- └─ dataset/pretrain_hq.jsonl       ← 训练数据（预训练语料的前 10000 行）
+ └─ resource/minimind_dataset/pretrain_t2t_mini.jsonl       ← 训练数据（预训练语料的前 10000 行）
 
 输出的 tokenizer 被所有训练脚本依赖：
  ├─ model/tokenizer.json            ← 训练好的词表文件

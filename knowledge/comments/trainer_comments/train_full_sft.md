@@ -289,7 +289,7 @@ Loss Masking 机制（SFT 最关键的概念）：
       题目之后，自然就学会了"疑问句以 what/how/why 开头"的格式——题目（特殊 token）
       虽然没被"评分"，但作为条件反复出现，你的大脑（模型）学会了它们的模式。
 
-    详见 dataset/lm_dataset.py SFTDataset.generate_labels() 的实现。
+    详见 scripts/Dataset/lm_dataset.py SFTDataset.generate_labels() 的实现。
 
 ```
 
@@ -623,7 +623,7 @@ SFT 和预训练共用一套模型架构，但以下几点必须注意：
 
 1. from_weight（默认 'pretrain'）
    这是 SFT 最重要的参数。init_model 会加载预训练产出的权重文件
-  （默认路径 ../out/pretrain_512.pth），作为 SFT 的初始权重。
+  （默认路径 ../models/pretrain_512.pth），作为 SFT 的初始权重。
    如果设为 'none'，则从随机初始化开始训练（几乎没有人这么做，
    因为没有预训练的 SFT 质量极差）。
 
@@ -754,7 +754,7 @@ init_model 加载模型和 tokenizer：
 ```text
 ========== SFTDataset：SFT 特有的数据封装 ==========
 
-SFTDataset (dataset/lm_dataset.py:113) 和 PretrainDataset 的关键区别：
+SFTDataset (scripts/Dataset/lm_dataset.py:113) 和 PretrainDataset 的关键区别：
 
   ┌─────────────────┬─────────────────────┬─────────────────────┐
   │                 │  PretrainDataset    │  SFTDataset         │

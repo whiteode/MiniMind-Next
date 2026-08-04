@@ -31,7 +31,7 @@ train_reason.py / dpo / ppo / grpo / spo（偏好对齐/推理微调）
 
 ```python
 from scripts.Model.model_minimind import MiniMindConfig
-from dataset.lm_dataset import PretrainDataset
+from scripts.Dataset.lm_dataset import PretrainDataset
 from scripts.Trainer.trainer_utils import get_lr, Logger, lm_checkpoint, init_distributed_mode, ...
 ```
 
@@ -76,7 +76,7 @@ from scripts.Trainer.trainer_utils import get_lr, Logger, lm_checkpoint, init_di
 ```
 train_pretrain.py
  ├─ scripts/Model/model_minimind.py     ← 模型定义
- ├─ dataset/lm_dataset.py        ← PretrainDataset 数据加载
+ ├─ scripts/Dataset/lm_dataset.py        ← PretrainDataset 数据加载
  ├─ scripts/Trainer/trainer_utils.py     ← 工具函数（lr_schedule, checkpoint, DDP init...）
  └─ scripts/Trainer/train_full_sft.py    ← 下一阶段：指令微调（结构类似）
 ```

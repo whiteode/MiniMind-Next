@@ -147,7 +147,7 @@ Reason 训练用 `reduction='none'` 拿到每个 token 的 loss，再手动乘 m
 
 ### 第 1 层：导入与参数定义
 
-- `from dataset.lm_dataset import SFTDataset` → 复用 SFT 的数据集（用 SFTDataset 处理推理数据）
+- `from scripts.Dataset.lm_dataset import SFTDataset` → 复用 SFT 的数据集（用 SFTDataset 处理推理数据）
 - `--from_weight` 默认 `dpo` → 基于 DPO 产出继续训练
 - `--max_seq_len` 默认 `720` → 比 SFT（340）长，推理需要更多 token
 - `--data_path` 默认 `../dataset/r1_mix_1024.jsonl` → R1 蒸馏推理数据
@@ -250,7 +250,7 @@ else:
 ```
 train_reason.py
  ├─ scripts/Model/model_minimind.py          ← 模型定义
- ├─ dataset/lm_dataset.py            ← SFTDataset（复用，无需新数据集类）
+ ├─ scripts/Dataset/lm_dataset.py            ← SFTDataset（复用，无需新数据集类）
  ├─ scripts/Trainer/trainer_utils.py         ← 工具函数
  ├─ scripts/Trainer/train_full_sft.py        ← 对比参考：普通 SFT 的 loss 计算
  ├─ scripts/Trainer/train_grpo.py            ← 后续阶段：依赖 reasoning 格式做奖励

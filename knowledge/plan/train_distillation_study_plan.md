@@ -850,7 +850,7 @@ PyTorch 的设计最"贴心"——它帮你处理了数值稳定性问题，你�
 ```
 train_distillation.py
  ├─ scripts/Model/model_minimind.py          ← Student 和 Teacher 共享的模型定义
- ├─ dataset/lm_dataset.py            ← SFTDataset（和 SFT 训练用同一份数据）
+ ├─ scripts/Dataset/lm_dataset.py            ← SFTDataset（和 SFT 训练用同一份数据）
  ├─ scripts/Trainer/trainer_utils.py         ← 工具函数（init_model, Logger, lm_checkpoint 等）
  └─ plan/train_full_sft_study_plan.md ← 前置知识：SFT 数据格式和 CE Loss
 ```
