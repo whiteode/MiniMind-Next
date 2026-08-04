@@ -25,26 +25,20 @@ from trainer.trainer_utils import Logger, is_main_process, lm_checkpoint, init_d
 warnings.filterwarnings('ignore')
 
 
-# 自定义的Critic模型，继承自MiniMindLM
 class CriticModel(MiniMindForCausalLM):
     def __init__(self, params):
         super().__init__(params)
-        # 替换lm_head为输出单一价值的线性层
         self.value_head = nn.Linear(params.hidden_size, 1)
 
     def forward(self, input_ids=None, attention_mask=None, **kwargs):
-        # 使用基础模型获取隐藏状态
         outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
         hidden_states = self.model.norm(outputs[0])
-        # 使用value_head获取价值估计
         values = self.value_head(hidden_states).squeeze(-1)
         return values
 
 
 def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
-    """整合所有奖励函数计算总奖励"""
     def reasoning_model_reward(rewards):
-        # 1. 格式奖励（仅针对训练推理模型时使用）
         pattern = r"^<think>\n.*?\n</think>\n<answer>\n.*?\n</answer>$"
         pattern2 = r"^<think>\n.*?\n</think>\n\n<answer>\n.*?\n</answer>$"
 
@@ -61,7 +55,6 @@ def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
                 format_rewards.append(0.0)
         rewards += torch.tensor(format_rewards, device=args.device)
 
-        # 2. 标记奖励（防止严格奖励稀疏，仅针对训练推理模型时使用）
         def mark_num(text):
             reward = 0
             if text.count("<think>") == 1:
@@ -80,11 +73,9 @@ def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
 
     rewards = torch.zeros(len(responses), device=args.device)
 
-    # 格式奖励
     if args.reasoning == 1:
         rewards = reasoning_model_reward(rewards)
 
-    # 使用reward model计算整个response的奖励
     with torch.no_grad():
         reward_model_scores = []
         for prompt, response in zip(prompts, responses):
@@ -98,12 +89,10 @@ def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
             scale = 3.0
             score = max(min(score, scale), -scale)
 
-            # 当args.reasoning=1时，额外计算<answer>内容的奖励
             if args.reasoning == 1:
                 answer_match = re.search(r'<answer>(.*?)</answer>', response, re.DOTALL)
                 if answer_match:
                     answer_content = answer_match.group(1).strip()
-                    # 对answer内容单独计算reward
                     tmp_chat = messages + [{"role": "assistant", "content": answer_content}]
                     answer_score = reward_model.get_score(reward_tokenizer, tmp_chat)
                     answer_score = max(min(answer_score, scale), -scale)
@@ -121,57 +110,56 @@ def ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model, actor_sche
     critic_model.train()
 
     for step, batch in enumerate(loader, start=start_step + 1):
-        prompts = batch["prompt"]  # list[str], length B
+        prompts = batch["prompt"]
         enc = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, 
-                       max_length=args.max_seq_len, padding_side="left").to(args.device)  # input_ids: [B, P], attention_mask: [B, P]
+                       max_length=args.max_seq_len, padding_side="left").to(args.device)
         prompt_length = enc.input_ids.shape[1]
 
         with torch.no_grad():
-            # DDP 模型需要使用 .module 访问 generate 方法
             model_for_gen = actor_model.module if isinstance(actor_model, DistributedDataParallel) else actor_model
             gen_out = model_for_gen.generate(
                 input_ids=enc.input_ids, attention_mask=enc.attention_mask,
                 max_new_tokens=args.max_gen_len, do_sample=True, temperature=0.8,
-                pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)  # [B, P+R]
+                pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
 
         responses_text = [tokenizer.decode(gen_out[i, prompt_length:], skip_special_tokens=True) for i in range(len(prompts))]
-        rewards = calculate_rewards(prompts, responses_text, reward_model, reward_tokenizer)  # [B]
+        rewards = calculate_rewards(prompts, responses_text, reward_model, reward_tokenizer)
 
-        full_mask = (gen_out != tokenizer.pad_token_id).long()  # [B, P+R]
-        values_seq = critic_model(input_ids=gen_out, attention_mask=full_mask)  # [B, P+R]
+        full_mask = (gen_out != tokenizer.pad_token_id).long()
+        values_seq = critic_model(input_ids=gen_out, attention_mask=full_mask)
         last_indices = (full_mask * torch.arange(full_mask.size(1), device=gen_out.device)).argmax(dim=1)
-        values = values_seq[torch.arange(values_seq.size(0), device=values_seq.device), last_indices]  # [B]
-        advantages = rewards - values.detach()  # [B]
+        values = values_seq[torch.arange(values_seq.size(0), device=values_seq.device), last_indices]
+        advantages = rewards - values.detach()
 
         with autocast_ctx:
             res = actor_model(input_ids=gen_out, attention_mask=full_mask)
-            logits = res.logits  # [B, P+R, V]
+            logits = res.logits
             aux_loss = res.aux_loss if lm_config.use_moe else torch.tensor(0.0, device=args.device)
         
-        labels = gen_out[:, 1:].clone()  # [B, P+R-1]
-        logp_tokens = F.log_softmax(logits[:, :-1], dim=-1).gather(2, labels.unsqueeze(-1)).squeeze(-1)  # [B, P+R-1]
+        labels = gen_out[:, 1:].clone()
+        logp_tokens = F.log_softmax(logits[:, :-1], dim=-1).gather(2, labels.unsqueeze(-1)).squeeze(-1)
         seq_len = gen_out.size(1) - 1
         resp_mask = torch.arange(seq_len, device=gen_out.device).unsqueeze(0) >= prompt_length - 1
-        final_mask = resp_mask & (~labels.eq(tokenizer.pad_token_id))  # [B, P+R-1]
-        actor_logp = (logp_tokens * final_mask).sum(dim=1)  # [B]
+        final_mask = resp_mask & (~labels.eq(tokenizer.pad_token_id))
+        actor_logp = (logp_tokens * final_mask).sum(dim=1)
 
         with torch.no_grad():
-            old_logits = old_actor_model(input_ids=gen_out, attention_mask=full_mask).logits  # [B, P+R, V]
-            old_logp_tokens = F.log_softmax(old_logits[:, :-1], dim=-1).gather(2, labels.unsqueeze(-1)).squeeze(-1)  # [B, P+R-1]
-            old_logp = (old_logp_tokens * final_mask).sum(dim=1)  # [B]
+            old_logits = old_actor_model(input_ids=gen_out, attention_mask=full_mask).logits
+            old_logp_tokens = F.log_softmax(old_logits[:, :-1], dim=-1).gather(2, labels.unsqueeze(-1)).squeeze(-1)
+            old_logp = (old_logp_tokens * final_mask).sum(dim=1)
             
-            ref_logits = ref_model(input_ids=gen_out, attention_mask=full_mask).logits  # [B, P+R, V]
-            ref_logp_tokens = F.log_softmax(ref_logits[:, :-1], dim=-1).gather(2, labels.unsqueeze(-1)).squeeze(-1)  # [B, P+R-1]
-            ref_logp = (ref_logp_tokens * final_mask).sum(dim=1)  # [B]
+            ref_logits = ref_model(input_ids=gen_out, attention_mask=full_mask).logits
+            ref_logp_tokens = F.log_softmax(ref_logits[:, :-1], dim=-1).gather(2, labels.unsqueeze(-1)).squeeze(-1)
+            ref_logp = (ref_logp_tokens * final_mask).sum(dim=1)
 
-        kl = (actor_logp - old_logp).mean()  # scalar
-        kl_ref = (actor_logp - ref_logp).mean()  # scalar
-        ratio = torch.exp(actor_logp - old_logp)  # [B]
-        surr1 = ratio * advantages  # [B]
-        surr2 = torch.clamp(ratio, 1.0 - args.clip_epsilon, 1.0 + args.clip_epsilon) * advantages  # [B]
-        policy_loss = -torch.min(surr1, surr2).mean()  # scalar
-        value_loss = F.mse_loss(values, rewards)  # scalar
-        loss = (policy_loss + args.vf_coef * value_loss + args.kl_coef * kl_ref + aux_loss) / args.accumulation_steps  # scalar
+        kl = (actor_logp - old_logp).mean()
+        kl_ref = (actor_logp - ref_logp).mean()
+        ratio = torch.exp(actor_logp - old_logp)
+        surr1 = ratio * advantages
+        surr2 = torch.clamp(ratio, 1.0 - args.clip_epsilon, 1.0 + args.clip_epsilon) * advantages
+        policy_loss = -torch.min(surr1, surr2).mean()
+        value_loss = F.mse_loss(values, rewards)
+        loss = (policy_loss + args.vf_coef * value_loss + args.kl_coef * kl_ref + aux_loss) / args.accumulation_steps
         loss.backward()
 
         if (step + 1) % args.accumulation_steps == 0:
@@ -235,7 +223,6 @@ def ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model, actor_sche
             actor_state = raw_actor.state_dict()
             torch.save({k: v.half().cpu() for k, v in actor_state.items()}, ckp)
             
-            # 使用 lm_checkpoint 保存完整状态（包括 critic）
             lm_checkpoint(lm_config, weight=args.save_weight, model=actor_model, optimizer=actor_optimizer, 
                          epoch=epoch, step=step, wandb=wandb, save_dir='../checkpoints',
                          scheduler=actor_scheduler, critic_model=critic_model, 
@@ -281,22 +268,18 @@ if __name__ == "__main__":
     parser.add_argument("--use_compile", default=0, type=int, choices=[0, 1], help="是否使用torch.compile加速（0=否，1=是）")
     args = parser.parse_args()
 
-    # ========== 1. 初始化环境和随机种子 ==========
     local_rank = init_distributed_mode()
     if dist.is_initialized(): args.device = f"cuda:{local_rank}"
     setup_seed(42 + (dist.get_rank() if dist.is_initialized() else 0))
     
-    # ========== 2. 配置目录、模型参数、检查ckp ==========
     os.makedirs(args.save_dir, exist_ok=True)
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=bool(args.use_moe))
     ckp_data = lm_checkpoint(lm_config, weight=args.save_weight, save_dir='../checkpoints') if args.from_resume==1 else None
     
-    # ========== 3. 设置混合精度 ==========
     device_type = "cuda" if "cuda" in args.device else "cpu"
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
     autocast_ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
     
-    # ========== 4. 配wandb ==========
     wandb = None
     if args.use_wandb and is_main_process():
         import swanlab as wandb
@@ -305,33 +288,26 @@ if __name__ == "__main__":
         wandb_run_name = f"MiniMind-PPO-Epoch-{args.epochs}-BS-{args.batch_size}-LR-{args.learning_rate}"
         wandb.init(project=args.wandb_project, name=wandb_run_name, id=wandb_id, resume=resume)
     
-    # ========== 5. 初始化模型和数据 ==========
     base_weight = "reason" if args.reasoning == 1 else "full_sft"
-    # Actor模型
     actor_model, tokenizer = init_model(lm_config, base_weight, device=args.device)
     if args.use_compile == 1:
         actor_model = torch.compile(actor_model)
         Logger('torch.compile enabled')
-    # Old Actor模型
     old_actor_model, _ = init_model(lm_config, base_weight, device=args.device)
     old_actor_model = old_actor_model.eval().requires_grad_(False)
-    # Reference模型
     ref_model, _ = init_model(lm_config, base_weight, device=args.device)
     ref_model = ref_model.eval().requires_grad_(False)
-    # Critic模型
     moe_suffix = '_moe' if lm_config.use_moe else ''
     ckp = f'{args.save_dir}/{base_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
     state_dict = torch.load(ckp, map_location=args.device)
     critic_model = CriticModel(lm_config)
     critic_model.load_state_dict(state_dict, strict=False)
     critic_model = critic_model.to(args.device)
-    # Reward模型
     reward_model = AutoModel.from_pretrained(
         args.reward_model_path, torch_dtype=torch.float16, trust_remote_code=True
     )
     reward_model = reward_model.to(args.device).eval().requires_grad_(False)
     reward_tokenizer = AutoTokenizer.from_pretrained(args.reward_model_path, trust_remote_code=True)
-    # 数据和优化器
     train_ds = RLAIFDataset(args.data_path, tokenizer, max_length=(args.max_seq_len + args.max_gen_len))
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
     actor_optimizer = optim.AdamW(actor_model.parameters(), lr=args.learning_rate)
@@ -342,7 +318,6 @@ if __name__ == "__main__":
     actor_scheduler = CosineAnnealingLR(actor_optimizer, T_max=total_optimizer_steps, eta_min=args.learning_rate / 10)
     critic_scheduler = CosineAnnealingLR(critic_optimizer, T_max=total_optimizer_steps, eta_min=args.critic_learning_rate / 10)
     
-    # ========== 6. 从ckp恢复状态 ==========
     start_epoch, start_step = 0, 0
     if ckp_data:
         actor_model.load_state_dict(ckp_data['model'])
@@ -354,7 +329,6 @@ if __name__ == "__main__":
         start_epoch = ckp_data['epoch']
         start_step = ckp_data.get('step', 0)
     
-    # ========== 7. DDP包模型 ==========
     if dist.is_initialized():
         actor_model._ddp_params_and_buffers_to_ignore = {"freqs_cos", "freqs_sin"}
         critic_model._ddp_params_and_buffers_to_ignore = {"freqs_cos", "freqs_sin"}
@@ -362,7 +336,6 @@ if __name__ == "__main__":
         critic_model = DistributedDataParallel(critic_model, device_ids=[local_rank])
         old_actor_model.to(args.device)
     
-    # ========== 8. 开始训练 ==========
     for epoch in range(start_epoch, args.epochs):
         train_sampler and train_sampler.set_epoch(epoch)
         setup_seed(42 + epoch); indices = torch.randperm(len(train_ds)).tolist()
@@ -377,5 +350,4 @@ if __name__ == "__main__":
             ppo_train_epoch(epoch, loader, len(loader), old_actor_model, ref_model, 
                            actor_scheduler, critic_scheduler, reward_model, reward_tokenizer, 0, wandb)
     
-    # ========== 9. 清理分布进程 ==========
     if dist.is_initialized(): dist.destroy_process_group()
