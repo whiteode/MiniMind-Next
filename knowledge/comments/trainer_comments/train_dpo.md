@@ -1,6 +1,6 @@
 # train_dpo.py 注释整理
 
-> 本文档收录 `trainer/train_dpo.py` 中被移除的全部注释与 docstring。
+> 本文档收录 `scripts/Trainer/train_dpo.py` 中被移除的全部注释与 docstring。
 > 按原代码顺序分节，每节对应原代码中的一个逻辑块 / 函数。
 
 ---

@@ -854,11 +854,11 @@ A：更简单——只恢复 `model`、`optimizer`、`scheduler`。不需要恢�
 
 ```
 train_spo.py
- ├─ model/model_minimind.py               ← Policy、Ref 共享的模型定义
+ ├─ scripts/Model/model_minimind.py               ← Policy、Ref 共享的模型定义
  ├─ dataset/lm_dataset.py                 ← RLAIFDataset（与 GRPO/PPO 相同的数据集）
- ├─ trainer/trainer_utils.py              ← 工具函数（init_model, SkipBatchSampler 等）
- ├─ trainer/train_grpo.py                 ← 对比学习：GRPO（组内归一化，无 Critic）
- ├─ trainer/train_ppo.py                  ← 对比学习：PPO（有 Critic，有裁剪）
+ ├─ scripts/Trainer/trainer_utils.py              ← 工具函数（init_model, SkipBatchSampler 等）
+ ├─ scripts/Trainer/train_grpo.py                 ← 对比学习：GRPO（组内归一化，无 Critic）
+ ├─ scripts/Trainer/train_ppo.py                  ← 对比学习：PPO（有 Critic，有裁剪）
  ├─ plan/train_grpo_study_plan.md         ← 前置学习：GRPO 学习计划
  └─ plan/train_ppo_study_plan.md          ← 前置学习：PPO 学习计划
 ```

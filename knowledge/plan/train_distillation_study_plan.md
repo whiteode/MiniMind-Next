@@ -849,9 +849,9 @@ PyTorch 的设计最"贴心"——它帮你处理了数值稳定性问题，你�
 
 ```
 train_distillation.py
- ├─ model/model_minimind.py          ← Student 和 Teacher 共享的模型定义
+ ├─ scripts/Model/model_minimind.py          ← Student 和 Teacher 共享的模型定义
  ├─ dataset/lm_dataset.py            ← SFTDataset（和 SFT 训练用同一份数据）
- ├─ trainer/trainer_utils.py         ← 工具函数（init_model, Logger, lm_checkpoint 等）
+ ├─ scripts/Trainer/trainer_utils.py         ← 工具函数（init_model, Logger, lm_checkpoint 等）
  └─ plan/train_full_sft_study_plan.md ← 前置知识：SFT 数据格式和 CE Loss
 ```
 
@@ -867,7 +867,7 @@ train_distillation.py
 1. **先看理论**：仔细阅读本文第二、三节（核心概念 + 代码结构总览）
 2. **通读代码**：打开 `train_distillation.py`，对照本文第四节逐行看
 3. **动手实验**：
-   - 试跑一次默认参数：`python train_distillation.py`
+   - 试跑一次默认参数：`python scripts/Trainer/train_distillation.py`
    - 改温度：T=1.0 vs T=3.0，观察 distill loss 变化
    - 改 alpha：alpha=0.2 vs alpha=0.8，观察 CE/Distill 平衡
    - 对比：直接 SFT 一个小模型 vs 用大模型蒸馏，效果差异

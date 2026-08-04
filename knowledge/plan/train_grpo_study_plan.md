@@ -533,10 +533,10 @@ L_policy = -E[ exp(π/sg(π)) × A - β × (exp(Δ) - Δ - 1) ]
 
 ```
 train_grpo.py
- ├─ model/model_minimind.py              ← Policy 和 Ref 共用的模型定义
+ ├─ scripts/Model/model_minimind.py              ← Policy 和 Ref 共用的模型定义
  ├─ dataset/lm_dataset.py                ← RLAIFDataset（prompt 数据集）
- ├─ trainer/trainer_utils.py             ← 工具函数（init_model, SkipBatchSampler 等）
- ├─ trainer/train_dpo.py                 ← 前置对比：DPO 的实现（2.6 节有 PPO/GRPO/DPO 详细对比）
- ├─ trainer/train_reason.py              ← 前置依赖：产出的 reason.pth 是 GRPO 的默认起点
+ ├─ scripts/Trainer/trainer_utils.py             ← 工具函数（init_model, SkipBatchSampler 等）
+ ├─ scripts/Trainer/train_dpo.py                 ← 前置对比：DPO 的实现（2.6 节有 PPO/GRPO/DPO 详细对比）
+ ├─ scripts/Trainer/train_reason.py              ← 前置依赖：产出的 reason.pth 是 GRPO 的默认起点
  └─ plan/train_dpo_study_plan.md         ← 前置学习：DPO 偏好对齐（含 GRPO vs DPO vs PPO 对比）
 ```

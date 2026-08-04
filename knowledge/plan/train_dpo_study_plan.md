@@ -426,8 +426,8 @@ DPO 的学习率非常小（默认 `4e-8`），注释写"建议 <=5e-8 避免遗
 
 ```
 train_dpo.py
- ├─ model/model_minimind.py         ← policy 和 ref 共用的模型定义
+ ├─ scripts/Model/model_minimind.py         ← policy 和 ref 共用的模型定义
  ├─ dataset/lm_dataset.py            ← DPODataset（偏好数据加载 + loss mask）
- ├─ trainer/trainer_utils.py         ← 工具函数
+ ├─ scripts/Trainer/trainer_utils.py         ← 工具函数
  └─ plan/train_lora_study_plan.md   ← 前置学习：LoRA 微调
 ```

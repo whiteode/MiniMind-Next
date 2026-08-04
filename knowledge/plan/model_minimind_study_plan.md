@@ -1656,12 +1656,12 @@ tokenizer_config.json / tokenizer.json  ←── 分词器，决定 vocab_size=
 
 ```python
 # 所有训练脚本的模式：
-from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
+from scripts.Model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 
 lm_config = MiniMindConfig(hidden_size=512, ...)
 model = MiniMindForCausalLM(lm_config)
 # 如果有 LoRA:
-from model.model_lora import apply_lora, load_lora
+from scripts.Model.model_lora import apply_lora, load_lora
 apply_lora(model, rank=8)
 ```
 

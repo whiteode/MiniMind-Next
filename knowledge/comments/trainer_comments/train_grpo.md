@@ -1,6 +1,6 @@
 # train_grpo.py 注释整理
 
-> 本文档收录 `trainer/train_grpo.py` 中被移除的全部注释与 docstring。
+> 本文档收录 `scripts/Trainer/train_grpo.py` 中被移除的全部注释与 docstring。
 > 按原代码顺序分节，每节对应原代码中的一个逻辑块 / 函数。
 
 ---
@@ -698,7 +698,7 @@ base_weight: 推理模型用 "reason"，普通模型用 "full_sft" 作为基座
 --- Reference 模型（参数冻结的初始策略，用于 KL 散度计算）---
 --- Reward 模型（外部加载，冻结，用于生成奖励信号）---
 Reward 模型与待训练的 MiniMind policy 模型是完全独立的两个模型体系：
-  - Policy / Reference 模型: MiniMind 架构（model/model_minimind.py），权重从 base_weight
+  - Policy / Reference 模型: MiniMind 架构（scripts/Model/model_minimind.py），权重从 base_weight
     ("reason" 或 "full_sft") 初始化，GRPO 训练会更新其参数。
   - Reward 模型: 通过 --reward_model_path 指定的独立模型（默认 internlm2-1_8b-reward），
     使用 HuggingFace AutoModel.from_pretrained 加载，是一个经过偏好对齐训练的外部奖励模型，

@@ -249,11 +249,11 @@ else:
 
 ```
 train_reason.py
- ├─ model/model_minimind.py          ← 模型定义
+ ├─ scripts/Model/model_minimind.py          ← 模型定义
  ├─ dataset/lm_dataset.py            ← SFTDataset（复用，无需新数据集类）
- ├─ trainer/trainer_utils.py         ← 工具函数
- ├─ trainer/train_full_sft.py        ← 对比参考：普通 SFT 的 loss 计算
- ├─ trainer/train_grpo.py            ← 后续阶段：依赖 reasoning 格式做奖励
+ ├─ scripts/Trainer/trainer_utils.py         ← 工具函数
+ ├─ scripts/Trainer/train_full_sft.py        ← 对比参考：普通 SFT 的 loss 计算
+ ├─ scripts/Trainer/train_grpo.py            ← 后续阶段：依赖 reasoning 格式做奖励
  ├─ eval_llm.py                      ← enable_thinking 推理时控制
  └─ plan/train_dpo_study_plan.md     ← 前置学习：DPO 偏好对齐
 ```

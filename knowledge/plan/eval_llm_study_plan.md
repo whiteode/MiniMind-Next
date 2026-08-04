@@ -20,9 +20,9 @@
 ### 第 1 层：import & 全局（L1–L12）
 
 ```python
-from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
-from model.model_lora import *
-from trainer.trainer_utils import setup_seed, get_model_params
+from scripts.Model.model_minimind import MiniMindConfig, MiniMindForCausalLM
+from scripts.Model.model_lora import *
+from scripts.Trainer.trainer_utils import setup_seed, get_model_params
 ```
 
 **要点**：
@@ -59,7 +59,7 @@ load_from
 - `model.to(device)` 是 in-place 还是返回新对象？
 - 权重命名规则（`{weight}_{hidden_size}{_moe}.pth`）和 `--weight` 各选项的对应关系（pretrain / full_sft / rlhf / reason / ppo_actor / grpo / spo）。
 
-**建议并行阅读**：`model/model_minimind.py`（模型结构）、`model/model_lora.py`（LoRA 注入细节）。
+**建议并行阅读**：`scripts/Model/model_minimind.py`（模型结构）、`scripts/Model/model_lora.py`（LoRA 注入细节）。
 
 ---
 
@@ -176,16 +176,16 @@ gen_tokens = len(generated_ids[0]) - len(inputs["input_ids"][0])
 
 ```
 eval_llm.py
- ├─ model/model_minimind.py      ← 模型定义（MiniMindForCausalLM）
- ├─ model/model_lora.py           ← LoRA 注入逻辑
- ├─ trainer/trainer_utils.py      ← setup_seed, get_model_params
+ ├─ scripts/Model/model_minimind.py      ← 模型定义（MiniMindForCausalLM）
+ ├─ scripts/Model/model_lora.py           ← LoRA 注入逻辑
+ ├─ scripts/Trainer/trainer_utils.py      ← setup_seed, get_model_params
  ├─ scripts/Deploy/serve_openai_api.py   ← OpenAI 兼容 API 版推理（相近逻辑）
- ├─ trainer/train_full_sft.py     ← full_sft 训练脚本
- ├─ trainer/train_pretrain.py     ← pretrain 训练脚本
- ├─ trainer/train_ppo.py          ← RLHF-PPO 训练脚本
- ├─ trainer/train_grpo.py         ← GRPO 训练脚本
- ├─ trainer/train_spo.py          ← SPO 训练脚本
- └─ trainer/train_reason.py       ← Reason 训练脚本
+ ├─ scripts/Trainer/train_full_sft.py     ← full_sft 训练脚本
+ ├─ scripts/Trainer/train_pretrain.py     ← pretrain 训练脚本
+ ├─ scripts/Trainer/train_ppo.py          ← RLHF-PPO 训练脚本
+ ├─ scripts/Trainer/train_grpo.py         ← GRPO 训练脚本
+ ├─ scripts/Trainer/train_spo.py          ← SPO 训练脚本
+ └─ scripts/Trainer/train_reason.py       ← Reason 训练脚本
 ```
 
 **建议学习顺序**：先掌握 `eval_llm.py`（推理入口）→ 再按 `pretrain → full_sft → reason → ppo/grpo/spo` 顺序学习训练脚本，每个阶段都有对应 `--weight` 选项。
@@ -196,12 +196,12 @@ eval_llm.py
 
 ### 基础
 
-**1. 运行 `python eval_llm.py --weight pretrain` 观察输出与 `full_sft` 的差异**
+**1. 运行 `python scripts/Deploy/eval_llm.py --weight pretrain` 观察输出与 `full_sft` 的差异**
 
 ```bash
 # 激活环境，自动测试模式（echo "0" 表示选择 0-自动测试）
 conda activate minimind
-echo "0" | python eval_llm.py --weight pretrain
+echo "0" | python scripts/Deploy/eval_llm.py --weight pretrain
 ```
 
 pretrain 输出示例（prompt="你有什么特长？"）：
@@ -223,9 +223,9 @@ pretrain 输出示例（prompt="你有什么特长？"）：
 **2. 将 `temperature` 分别设为 0.1 / 0.85 / 1.5 对比生成质量**
 
 ```bash
-echo "0" | python eval_llm.py --weight full_sft --temperature 0.1
-echo "0" | python eval_llm.py --weight full_sft --temperature 0.85
-echo "0" | python eval_llm.py --weight full_sft --temperature 1.5
+echo "0" | python scripts/Deploy/eval_llm.py --weight full_sft --temperature 0.1
+echo "0" | python scripts/Deploy/eval_llm.py --weight full_sft --temperature 0.85
+echo "0" | python scripts/Deploy/eval_llm.py --weight full_sft --temperature 1.5
 ```
 
 **temperature=0.1**（prompt="你有什么特长？"）：
@@ -261,9 +261,9 @@ def fibonacci(n):
 **3. 将 `top_p` 设为 0.5 / 0.9 / 1.0 观察效果变化**
 
 ```bash
-echo "0" | python eval_llm.py --weight full_sft --top_p 0.5
-echo "0" | python eval_llm.py --weight full_sft --top_p 0.9
-echo "0" | python eval_llm.py --weight full_sft --top_p 1.0
+echo "0" | python scripts/Deploy/eval_llm.py --weight full_sft --top_p 0.5
+echo "0" | python scripts/Deploy/eval_llm.py --weight full_sft --top_p 0.9
+echo "0" | python scripts/Deploy/eval_llm.py --weight full_sft --top_p 1.0
 ```
 
 **top_p=0.5**（候选集小）：
@@ -323,7 +323,7 @@ elif 'medical' in args.lora_weight:
 
 **5. 修改 LoRA 加载逻辑，让 `lora_weight` 支持多个 LoRA 合并**
 
-修改 `model/model_lora.py`，新增 `apply_lora_multi()` 和 `load_lora_multi()`：
+修改 `scripts/Model/model_lora.py`，新增 `apply_lora_multi()` 和 `load_lora_multi()`：
 
 - `apply_lora_multi(model, ranks)`：为每层注入多个 LoRA 模块（每个模块一个 rank），前向传播时把多个 LoRA 分支输出求和再与原路相加
 - `load_lora_multi(model, paths)`：从多个 .pth 文件加载权重到对应 LoRA 模块，支持 `merge_weights` 缩放系数
@@ -332,10 +332,10 @@ elif 'medical' in args.lora_weight:
 
 ```bash
 # 单个 LoRA（与原行为一致）
-python eval_llm.py --weight full_sft --lora_weight lora_medical
+python scripts/Deploy/eval_llm.py --weight full_sft --lora_weight lora_medical
 
 # 多个 LoRA 合并推理
-python eval_llm.py --weight full_sft --lora_weight lora_identity,lora_medical
+python scripts/Deploy/eval_llm.py --weight full_sft --lora_weight lora_identity,lora_medical
 ```
 
 **多 LoRA 合并原理**：
@@ -379,9 +379,9 @@ parser.add_argument('--repetition_penalty', default=1.0, type=float,
 
 ```bash
 # 测试不同惩罚强度
-echo "0" | python eval_llm.py --weight full_sft --repetition_penalty 1.0
-echo "0" | python eval_llm.py --weight full_sft --repetition_penalty 1.2
-echo "0" | python eval_llm.py --weight full_sft --repetition_penalty 2.0
+echo "0" | python scripts/Deploy/eval_llm.py --weight full_sft --repetition_penalty 1.0
+echo "0" | python scripts/Deploy/eval_llm.py --weight full_sft --repetition_penalty 1.2
+echo "0" | python scripts/Deploy/eval_llm.py --weight full_sft --repetition_penalty 2.0
 ```
 
 **repetition_penalty=1.2 测试结果**（prompt="比较一下猫和狗作为宠物的优缺点"）：

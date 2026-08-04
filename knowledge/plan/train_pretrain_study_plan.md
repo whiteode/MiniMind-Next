@@ -30,9 +30,9 @@ train_reason.py / dpo / ppo / grpo / spo（偏好对齐/推理微调）
 ### 第 1 层：导入与全局配置（L1–L20）
 
 ```python
-from model.model_minimind import MiniMindConfig
+from scripts.Model.model_minimind import MiniMindConfig
 from dataset.lm_dataset import PretrainDataset
-from trainer.trainer_utils import get_lr, Logger, lm_checkpoint, init_distributed_mode, ...
+from scripts.Trainer.trainer_utils import get_lr, Logger, lm_checkpoint, init_distributed_mode, ...
 ```
 
 **要点**：
@@ -75,10 +75,10 @@ from trainer.trainer_utils import get_lr, Logger, lm_checkpoint, init_distribute
 
 ```
 train_pretrain.py
- ├─ model/model_minimind.py     ← 模型定义
+ ├─ scripts/Model/model_minimind.py     ← 模型定义
  ├─ dataset/lm_dataset.py        ← PretrainDataset 数据加载
- ├─ trainer/trainer_utils.py     ← 工具函数（lr_schedule, checkpoint, DDP init...）
- └─ trainer/train_full_sft.py    ← 下一阶段：指令微调（结构类似）
+ ├─ scripts/Trainer/trainer_utils.py     ← 工具函数（lr_schedule, checkpoint, DDP init...）
+ └─ scripts/Trainer/train_full_sft.py    ← 下一阶段：指令微调（结构类似）
 ```
 
 ## 六、学习目标检查清单

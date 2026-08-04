@@ -1,6 +1,6 @@
 # train_pretrain.py 注释整理
 
-> 本文档收录 `trainer/train_pretrain.py` 中被移除的全部注释与 docstring。
+> 本文档收录 `scripts/Trainer/train_pretrain.py` 中被移除的全部注释与 docstring。
 > 按原代码顺序分节，每节对应原代码中的一个逻辑块 / 函数。
 
 ---
@@ -66,7 +66,7 @@
      DDP = DistributedDataParallel，是 PyTorch 的分布式数据并行框架。
      不是 GDP（国内生产总值），是 DDP。
 
-     init_distributed_mode 做的事（见 trainer/trainer_utils.py:102-109）：
+     init_distributed_mode 做的事（见 scripts/Trainer/trainer_utils.py:102-109）：
        1. 检查环境变量 RANK 是否存在 → 不存在则返回 0（单卡模式）
        2. 调用 dist.init_process_group(backend="nccl") 初始化进程组
        3. 读取 LOCAL_RANK 并设置当前进程使用的 GPU
@@ -114,7 +114,7 @@
      虽然不影响收敛，但（1）**浪费了重现跑这 1000 个 batch 的时间**，
      （2）如果用了学习率调度里依赖 global_step 的 warmup，数据分布错位会出问题。
 
-     SkipBatchSampler 做的事情（见 trainer/trainer_utils.py:315-338）：
+     SkipBatchSampler 做的事情（见 scripts/Trainer/trainer_utils.py:315-338）：
        包装一个已有的 Sampler，在 yield batch 之前先扔掉前 skip_batches 个 batch。
        比如 skip_batches=1000，它就从第 1001 个 batch 开始 yield。
        调用方传入 start_step（上次中断时的步数），SkipBatchSampler 就精确跳过
@@ -378,7 +378,7 @@ LLM 的主损失是交叉熵（Next-token prediction）；如果用了 MoE（混
    我先前的理解：
      ...（用户只看到 aux_loss 是"让所有专家均衡使用"，不知道具体公式和计算）
    ✅ 纠正后的理解：
-     aux_loss 实现见 model/model_minimind.py:2120-2261，核心公式（Switch Transformer）：
+     aux_loss 实现见 scripts/Model/model_minimind.py:2120-2261，核心公式（Switch Transformer）：
 
        aux_loss = α × Σ(Pᵢ × fᵢ)
 

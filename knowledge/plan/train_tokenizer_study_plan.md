@@ -659,7 +659,7 @@ train_tokenizer.py
 1. **先看理论**：仔细阅读本文第二、三节（核心概念 + 代码结构总览）
 2. **通读代码**：打开 `train_tokenizer.py`，对照本文第四节逐行看
 3. **动手实验**：
-   - 运行一次：`python train_tokenizer.py`（不需要 GPU，几分钟）
+   - 运行一次：`python scripts/Trainer/train_tokenizer.py`（不需要 GPU，几分钟）
    - 试不同 vocab_size：500 / 1000 / 6400，观察词表内容差异
    - 试不同数据量：1000 行 vs 10000 行 vs 全部数据，观察效果
    - 测试 ByteLevel vs Whitespace 预分词器对比

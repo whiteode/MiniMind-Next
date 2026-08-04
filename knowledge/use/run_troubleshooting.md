@@ -1,10 +1,10 @@
-# eval_llm.py 运行问题记录
+# scripts/Deploy/eval_llm.py 运行问题记录
 
 ## 1. trainer_utils.py 语法错误
 
 **报错**：
 ```
-File "trainer/trainer_utils.py", line 215
+File "scripts/Trainer/trainer_utils.py", line 215
     raw_model = model.module if isinstance(model, DistributedDataParallel) else 
                                                                                 ^
 SyntaxError: invalid syntax
@@ -14,7 +14,7 @@ SyntaxError: invalid syntax
 
 **修复**：将 `else \` 改为 `else model`。
 
-**文件**：`trainer/trainer_utils.py:215`
+**文件**：`scripts/Trainer/trainer_utils.py:215`
 
 ---
 

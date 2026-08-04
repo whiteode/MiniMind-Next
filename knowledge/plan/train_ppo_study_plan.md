@@ -881,9 +881,9 @@ A：输入是预训练好的 hidden states（已有语义特征），监督信�
 
 ```
 train_ppo.py
- ├─ model/model_minimind.py               ← Actor、Old Actor、Ref 和 Critic 共享的模型定义
+ ├─ scripts/Model/model_minimind.py               ← Actor、Old Actor、Ref 和 Critic 共享的模型定义
  ├─ dataset/lm_dataset.py                 ← RLAIFDataset（与 GRPO 相同的数据集）
- ├─ trainer/trainer_utils.py              ← 工具函数（init_model, SkipBatchSampler 等）
- ├─ trainer/train_grpo.py                 ← 对比学习：GRPO 的无 Critic 实现
+ ├─ scripts/Trainer/trainer_utils.py              ← 工具函数（init_model, SkipBatchSampler 等）
+ ├─ scripts/Trainer/train_grpo.py                 ← 对比学习：GRPO 的无 Critic 实现
  └─ plan/train_grpo_study_plan.md         ← 前置学习：GRPO 学习计划
 ```

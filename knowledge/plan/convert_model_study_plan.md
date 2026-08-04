@@ -39,7 +39,7 @@ ls ../out/
 # 应看到类似: pretrain_512.pth  full_sft_512.pth  dpo_512.pth  ...
 
 # 确认有 tokenizer 文件
-ls ../model/
+ls ../scripts/Model/
 # 应看到: tokenizer.json  tokenizer_config.json  ...
 ```
 
@@ -149,7 +149,7 @@ llama_model.save_pretrained(transformers_path)
   3. 加载权重 ──→ torch.load(.pth) → load_state_dict(strict=False)
   4. 精度转换 ──→ .to(dtype)  (默认 float16)
   5. 保存模型 ──→ save_pretrained(transformers_path, safe_serialization=False)
-  6. 保存 tokenizer ──→ AutoTokenizer.from_pretrained('../model/') → save_pretrained()
+  6. 保存 tokenizer ──→ AutoTokenizer.from_pretrained('../scripts/Model/') → save_pretrained()
   7. 修补 config ──→ 注入 tokenizer_class + extra_special_tokens
 ```
 
@@ -265,7 +265,7 @@ json.dump(
 )
 ```
 
-- 从 `../model/` 保存 tokenizer 后，读取其 `tokenizer_config.json`
+- 从 `../scripts/Model/` 保存 tokenizer 后，读取其 `tokenizer_config.json`
 - 注入 `tokenizer_class: "PreTrainedTokenizerFast"`——transformers 5.0 要求此字段
 - 注入空的 `extra_special_tokens: {}`——也是 transformers 5.0 的兼容性要求
 - 使用 `{**old_dict, **new_dict}` 语法合并（新值覆盖旧值）

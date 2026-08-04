@@ -5,7 +5,7 @@
 你已经学完了 11 个训练脚本。每个脚本开头都有这么一行：
 
 ```python
-from trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
+from scripts.Trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
 ```
 
 **`trainer_utils.py` 就是这些公共函数的"大本营"。** 整个文件只有 338 行，做了七件事：
@@ -779,7 +779,7 @@ if int(os.environ.get("RANK", -1)) == -1:
     return 0  # 非 DDP 模式
 ```
 
-如果不通过 `torchrun` 启动（直接 `python train_pretrain.py`），`RANK` 环境变量不存在，返回 0。后续所有 `is_main_process()` 都返回 True，`Logger` 正常打印。
+如果不通过 `torchrun` 启动（直接 `python scripts/Trainer/train_pretrain.py`），`RANK` 环境变量不存在，返回 0。后续所有 `is_main_process()` 都返回 True，`Logger` 正常打印。
 
 ---
 
@@ -920,7 +920,7 @@ train_pretrain.py
 
 ```python
 # 在单 GPU 模式下运行
-from trainer.trainer_utils import is_main_process, Logger
+from scripts.Trainer.trainer_utils import is_main_process, Logger
 print(f"is_main_process: {is_main_process()}")  # 应该是 True
 Logger("Hello from rank 0")  # 应该打印
 ```
@@ -932,7 +932,7 @@ Logger("Hello from rank 0")  # 应该打印
 ```python
 # 模拟存档
 import torch
-from trainer.trainer_utils import lm_checkpoint
+from scripts.Trainer.trainer_utils import lm_checkpoint
 
 # 创建一个简单模型
 model = torch.nn.Linear(10, 10)
@@ -951,7 +951,7 @@ print(data.keys())  # 应该有 model, optimizer, epoch, step, world_size, wandb
 
 ```python
 from torch.utils.data import DataLoader, SequentialSampler
-from trainer.trainer_utils import SkipBatchSampler
+from scripts.Trainer.trainer_utils import SkipBatchSampler
 
 # 创建一个有 100 个样本的数据集
 dataset = list(range(100))

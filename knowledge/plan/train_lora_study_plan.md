@@ -72,7 +72,7 @@ B: zero               ← 全 0 初始化，保证 BAx = 0
 
 ## 三、关键代码路径
 
-### 3.1 LoRA 模块定义（model/model_lora.py）
+### 3.1 LoRA 模块定义（scripts/Model/model_lora.py）
 
 ```
 class LoRA(nn.Module):
@@ -322,7 +322,7 @@ def load_lora_multi(model, paths, merge_weights=None):
 
 ## 五、文件逐段精读计划
 
-### 第 1 层：model/model_lora.py（核心逻辑，先读这个）
+### 第 1 层：scripts/Model/model_lora.py（核心逻辑，先读这个）
 
 - **LoRA 类**（L7-57）：理解降维 → 升维的旁路结构，重点看初始化策略
 - **apply_lora**（L63-77）：理解模块注入的 monkey-patch 原理
@@ -458,10 +458,10 @@ def load_lora_multi(model, paths, merge_weights=None):
 
 ```
 train_lora.py
- ├─ model/model_lora.py            ← LoRA 模块定义、注入、保存（核心）
- ├─ model/model_minimind.py         ← 被注入 LoRA 的目标模型
+ ├─ scripts/Model/model_lora.py            ← LoRA 模块定义、注入、保存（核心）
+ ├─ scripts/Model/model_minimind.py         ← 被注入 LoRA 的目标模型
  ├─ dataset/lm_dataset.py           ← SFTDataset（和 full SFT 完全一样）
- ├─ trainer/trainer_utils.py        ← 工具函数（和 full SFT 完全一样）
- ├─ trainer/train_full_sft.py       ← 对比参考：full SFT 实现
+ ├─ scripts/Trainer/trainer_utils.py        ← 工具函数（和 full SFT 完全一样）
+ ├─ scripts/Trainer/train_full_sft.py       ← 对比参考：full SFT 实现
  └─ plan/train_full_sft_study_plan.md ← 之前的学习笔记
 ```

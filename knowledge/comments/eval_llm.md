@@ -1,6 +1,6 @@
-# eval_llm.py 注释整理
+# scripts/Deploy/eval_llm.py 注释整理
 
-> 本文档收录 `eval_llm.py` 中被移除的全部注释与 docstring。
+> 本文档收录 `scripts/Deploy/eval_llm.py` 中被移除的全部注释与 docstring。
 > 按原代码顺序分节，每节对应原代码中的一个逻辑块 / 函数。
 
 ---
@@ -589,7 +589,7 @@ attention_mask 在 prefill 阶段怎么用？
 10. 如果我想加载 MoE 版本的 pretrain 权重，命令行应该怎么写？
    答：--weight pretrain 指定加载 pretrain 权重，--use_moe 1 启用 MoE 架构。
      命令行示例：
-       python eval_llm.py --weight pretrain --use_moe 1 --hidden_size 640
+       python scripts/Deploy/eval_llm.py --weight pretrain --use_moe 1 --hidden_size 640
      --weight pretrain 定位权重文件 ./out/pretrain_640_moe.pth（见 init_model 第 36 行拼接逻辑），
      --use_moe 1 控制模型初始化时是否使用 MoE 架构（MiniMindConfig 的 use_moe 字段）。
 11. 在端侧部署时输入形状必须固定，attention_mask 如何配合解决这个问题？

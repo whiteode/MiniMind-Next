@@ -22,9 +22,9 @@ cp MiniMind2-PyTorch/*.pth ./out/
 对应 `--weight pretrain / full_sft / reason / rlhf / ppo_actor / grpo / spo` 等选项。下载后直接运行：
 
 ```bash
-python eval_llm.py --weight full_sft          # 全量指令微调
-python eval_llm.py --weight pretrain           # 预训练
-python eval_llm.py --weight reason --use_moe 1 # MoE 推理模型
+python scripts/Deploy/eval_llm.py --weight full_sft          # 全量指令微调
+python scripts/Deploy/eval_llm.py --weight pretrain           # 预训练
+python scripts/Deploy/eval_llm.py --weight reason --use_moe 1 # MoE 推理模型
 ```
 
 ## 2. HF 格式完整模型（用于 `--load_from` 选项）
@@ -40,7 +40,7 @@ git clone https://huggingface.co/jingyaogong/MiniMind2
 # 或者
 git clone https://www.modelscope.cn/models/gongjy/MiniMind2
 
-python eval_llm.py --load_from ./MiniMind2
+python scripts/Deploy/eval_llm.py --load_from ./MiniMind2
 ```
 
 ## 3. 在线体验（无需下载）

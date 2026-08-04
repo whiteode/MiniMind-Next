@@ -188,7 +188,7 @@ tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=Fa
 
 ### □ 4. 能理解 init_model 的 from_weight 如何加载 pretrain 权重
 
-`init_model`（定义在 `trainer/trainer_utils.py`）的核心逻辑：
+`init_model`（定义在 `scripts/Trainer/trainer_utils.py`）的核心逻辑：
 
 ```python
 def init_model(lm_config, from_weight, device):
@@ -290,8 +290,8 @@ SFT 的训练目标不是"学会看懂用户问题"，而是"学会在给定的�
 
 ```
 train_full_sft.py
- ├─ model/model_minimind.py       ← 模型定义（和 pretrain 一样）
+ ├─ scripts/Model/model_minimind.py       ← 模型定义（和 pretrain 一样）
  ├─ dataset/lm_dataset.py          ← SFTDataset（重点学习 generate_labels）
- ├─ trainer/trainer_utils.py       ← 工具函数（和 pretrain 一样）
+ ├─ scripts/Trainer/trainer_utils.py       ← 工具函数（和 pretrain 一样）
  └─ plan/train_pretrain_study_plan.md ← 之前的学习笔记，作为对比参考
 ```

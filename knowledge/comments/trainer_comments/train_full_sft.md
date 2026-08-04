@@ -1,6 +1,6 @@
 # train_full_sft.py 注释整理
 
-> 本文档收录 `trainer/train_full_sft.py` 中被移除的全部注释与 docstring。
+> 本文档收录 `scripts/Trainer/train_full_sft.py` 中被移除的全部注释与 docstring。
 > 按原代码顺序分节，每节对应原代码中的一个逻辑块 / 函数。
 
 ---
@@ -301,7 +301,7 @@ Loss Masking 机制（SFT 最关键的概念）：
 标准库：文件路径与系统操作
 ═══════════════════════════════════════════════════════════════════════════
 将当前包标记为 "trainer"，确保相对导入（from .xxx import ...）能正常工作
-把项目根目录加入 sys.path，使得 from model.xxx / dataset.xxx 等导入能找到模块
+把项目根目录加入 sys.path，使得 from scripts.Model.xxx / dataset.xxx 等导入能找到模块
 ═══════════════════════════════════════════════════════════════════════════
 标准库：命令行参数、时间、警告
 ═══════════════════════════════════════════════════════════════════════════
@@ -377,7 +377,7 @@ MiniMindConfig：模型配置类（dataclass / 简单容器）
   - num_hidden_layers（Transformer 层数，默认 8）
   - use_moe（是否使用 MoE 架构）
   - vocab_size、num_attention_heads、intermediate_size 等
-  通过 from model.model_minimind import MiniMindConfig 导入并实例化后
+  通过 from scripts.Model.model_minimind import MiniMindConfig 导入并实例化后
   传给 init_model()，控制模型的初始化参数
 SFTDataset：指令微调数据集类
   继承自 torch.utils.data.Dataset
@@ -394,7 +394,7 @@ SFTDataset：指令微调数据集类
 设置全局随机种子（确保可复现性）
 创建模型实例，可选加载预训练权重
 断点续训专用：跳过已处理过的 batch
-这些工具函数集中在 trainer/trainer_utils.py 中，避免各脚本重复代码
+这些工具函数集中在 scripts/Trainer/trainer_utils.py 中，避免各脚本重复代码
 ```
 
 ---
