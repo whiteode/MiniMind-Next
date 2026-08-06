@@ -238,3 +238,24 @@ messages = conversation_history[-history_messages_num:] if history_messages_num 
 - **模型加载已统一到 `model_loader.py`**（`serve_openai_api.py` 已删除本地 `init_model`，`chat_llm.py` / `serve_openai_api.py` 共用同一个加载函数）：
   - **删除了无意义的 `--max_seq_len` 参数**：模型序列长度应由 config 的 `max_position_embeddings` 决定，而 `max_seq_len` 传给 `MiniMindConfig` 只会落入 `**kwargs` 被 `PretrainedConfig` 用 `setattr` 存到 config 上、模型从不读取，是 no-op；
   - **`torch.load` 改用 `weights_only=True`（只加载参数）**：已验证全部 `.pth` 权重都是纯 tensor 的 state_dict（75 个 tensor、0 个非 tensor），`weights_only=True` 安全可加载，且比 `weights_only=False`（允许任意 pickle 对象）更安全。
+
+---
+
+## 7. 方案B：滑动窗口 KV（`--enable_kv` + `--max_cache_tokens`）
+
+让 KV cache「兼有只记录最近几条历史」的能力（内存有界 + 绝大多数轮次增量）：
+
+- **模型 `MiniMindModel.forward` 新增 `position_offset`**：缓存被裁剪掉前段后，`start_pos = 缓存长度 + position_offset`，补回全局 RoPE 位置（`MiniMindForCausalLM.forward` 透传，默认 0 向后兼容）。
+- **`generate_kv` 透传 `position_offset`**（默认 0）。
+- **`chat_llm.py` 新增 `--max_cache_tokens W`**（需配合 `--enable_kv`）：
+  - 每轮按模板分隔符构造**增量 user 片段**（`window_chunk_text`：上一轮已生成 eos → 前缀 `\n`；被截断未出 eos → 补 `<|im_end|>\n`；首轮走完整模板）；
+  - token 追加进缓存 → `generate_kv` 只 prefill 新增块；
+  - 生成后 `trim_window` 把缓存**前段淘汰**到 ≤ W，`pos_offset += 淘汰数`。
+- **语义**：模型只看到最近 W 个 token（滑动窗口记忆），内存有界；与「保留全部历史」的纯 KV 模式二选一。
+
+**已修复的 bug（冒烟测试抓到的维度错误）**：
+- 缓存 K/V 布局为 `[batch, seq, kv_heads, head_dim]`，**seq 在 dim 1**；
+- 前段淘汰必须 `k[:, drop:, :, :]`（沿 dim 1）；
+- 曾误写成 `k[:, :, drop:, :]`（沿 dim 2），把 kv_heads 裁空 → 缓存变 `[1, 103, 0, 64]` → 下一轮 `torch.cat` 报 `Expected size 0 but got size 2`。
+
+**验证**：`tests/test_chat_window.py`（5 个用例）+ 真实权重 6 轮冒烟，缓存始终 ≤ W、`pos_offset` 递增（0→39→81→119→137）、非窗口 KV 路径回归正常。
