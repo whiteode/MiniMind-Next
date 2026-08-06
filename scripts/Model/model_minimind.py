@@ -523,13 +523,15 @@ class MiniMindModel(nn.Module):
                 attention_mask: Optional[torch.Tensor] = None,
                 past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
                 use_cache: bool = False,
+                position_offset: int = 0,
                 **kwargs):
         
         batch_size, seq_length = input_ids.shape
         if hasattr(past_key_values, 'layers'): past_key_values = None
         past_key_values = past_key_values or [None] * len(self.layers)
         
-        start_pos = past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0
+        # 缓存可能被裁剪掉前段（滑动窗口），用 position_offset 补回全局 RoPE 位置
+        start_pos = (past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0) + position_offset
 
         hidden_states = self.dropout(self.embed_tokens(input_ids))
 
@@ -573,6 +575,7 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
                 labels: Optional[torch.Tensor] = None,
                 past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
                 use_cache: bool = False,
+                position_offset: int = 0,
                 logits_to_keep: Union[int, torch.Tensor] = 0,
                 **args):
         
@@ -581,6 +584,7 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
+            position_offset=position_offset,
             **args
         )
         

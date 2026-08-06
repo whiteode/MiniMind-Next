@@ -15,6 +15,26 @@ from scripts.Trainer.trainer_utils import setup_seed
 warnings.filterwarnings('ignore')
 
 
+def window_chunk_text(tokenizer, prompt, is_first, last_is_eos):
+    """方案B：构造增量 user 片段文本（首轮走完整模板，后续按模板分隔符追加）。"""
+    if is_first:
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True)
+    sep = '\n' if last_is_eos else f'{tokenizer.eos_token}\n'
+    return f'{sep}<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n'
+
+
+def trim_window(all_ids, cache, max_tokens, pos_offset):
+    """把 KV 缓存裁剪到最近 max_tokens 个 token（前段淘汰），返回 (裁剪后ids, 裁剪后cache, 新偏移)。
+    注意：缓存 K/V 布局为 [batch, seq, kv_heads, head_dim]，seq 在 dim 1，沿 dim 1 裁前段。"""
+    if cache is None or all_ids is None or all_ids.shape[1] <= max_tokens:
+        return all_ids, cache, pos_offset
+    drop = all_ids.shape[1] - max_tokens
+    all_ids = all_ids[:, drop:]
+    cache = [(k[:, drop:, :, :], v[:, drop:, :, :]) for k, v in cache]
+    return all_ids, cache, pos_offset + drop
+
+
 class ChatSession:
     """终端多轮会话：维护对话历史与可选跨轮 KV cache。"""
 
@@ -25,6 +45,8 @@ class ChatSession:
         self.weight = args.weight
         self.enable_kv = args.enable_kv
         self.historys = args.historys
+        self.max_cache_tokens = args.max_cache_tokens
+        self.pos_offset = 0          # 已从缓存前段淘汰的 token 数（全局 RoPE 位置偏移）
         self.params = SamplingParams(
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
@@ -41,7 +63,10 @@ class ChatSession:
         setup_seed(2026)
         st = time.time()
         if self.enable_kv:
-            response, gen_tokens = self._turn_kv(prompt)
+            if self.max_cache_tokens:
+                response, gen_tokens = self._turn_kv_windowed(prompt)
+            else:
+                response, gen_tokens = self._turn_kv(prompt)
         else:
             response, gen_tokens = self._turn_full(prompt)
         return response, gen_tokens, time.time() - st
@@ -78,6 +103,34 @@ class ChatSession:
             params=self.params,
             streamer=self.streamer,
         )
+        response = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+        self.conversation.append({"role": "assistant", "content": response})
+        return response, generated_ids.shape[1]
+
+    def _turn_kv_windowed(self, prompt):
+        # ---------- 方案B：滑动窗口 KV（token 追加 + 前段淘汰 + 全局位置偏移） ----------
+        eos = self.tokenizer.eos_token_id
+        if self.weight == 'pretrain':
+            text = prompt if self.kv_all_ids is not None else self.tokenizer.bos_token + prompt
+        else:
+            is_first = self.kv_all_ids is None
+            last_is_eos = (not is_first) and self.kv_all_ids[0, -1].item() == eos
+            text = window_chunk_text(self.tokenizer, prompt, is_first, last_is_eos)
+
+        chunk_ids = self.tokenizer(text, return_tensors='pt', truncation=True).to(self.device).input_ids
+        self.kv_all_ids = chunk_ids if self.kv_all_ids is None else torch.cat([self.kv_all_ids, chunk_ids], dim=1)
+
+        print('🤖: ', end='')
+        generated_ids, self.kv_cache, self.kv_all_ids = generate_kv(
+            self.model, chunk_ids, self.kv_all_ids, self.kv_cache,
+            eos_token_id=eos,
+            params=self.params,
+            streamer=self.streamer,
+            position_offset=self.pos_offset,
+        )
+        self.kv_all_ids, self.kv_cache, self.pos_offset = trim_window(
+            self.kv_all_ids, self.kv_cache, self.max_cache_tokens, self.pos_offset)
+
         response = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
         self.conversation.append({"role": "assistant", "content": response})
         return response, generated_ids.shape[1]
@@ -123,12 +176,15 @@ def main():
     parser.add_argument('--top_p', default=0.85, type=float)
     parser.add_argument('--historys', default=0, type=int, help='携带历史对话轮数（需为偶数，0=不带历史）')
     parser.add_argument('--enable_kv', default=False, action='store_true', help='启用跨轮 KV cache（多轮只计算新增 token，与 --historys 互斥）')
+    parser.add_argument('--max_cache_tokens', default=0, type=int, help='KV 缓存窗口上限（token 数；0=不设上限保留全部历史；需配合 --enable_kv，实现滑动窗口方案B）')
     parser.add_argument('--repetition_penalty', default=1.0, type=float)
     parser.add_argument('--show_speed', default=1, type=int)
     args = parser.parse_args()
 
     if args.enable_kv and args.historys != 0:
         raise SystemExit('--enable_kv 与 --historys 互斥：KV 模式会维护全部对话历史')
+    if args.max_cache_tokens and not args.enable_kv:
+        raise SystemExit('--max_cache_tokens 需要配合 --enable_kv 使用')
 
     model, tokenizer = init_model(config_from_args(args))
     session = ChatSession(model, tokenizer, args)

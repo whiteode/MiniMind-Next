@@ -50,13 +50,16 @@ def sample_token(logits, temperature=1.0, top_p=1.0, top_k=0, repetition_penalty
 
 @torch.no_grad()
 def generate_kv(model, input_ids, all_ids, past_key_values, eos_token_id,
-                params: Optional[SamplingParams] = None, streamer=None):
+                params: Optional[SamplingParams] = None, streamer=None,
+                position_offset: int = 0):
     """逐 token 自回归解码，跨轮维护 past_key_values（每层一个 (k, v) 元组列表）。
+    position_offset：缓存被裁剪掉前段后，补回全局 RoPE 位置偏移。
     返回 (生成token张量, 更新后的cache, 累计token张量)。"""
     params = params or SamplingParams()
     generated = []
     for _ in range(params.max_new_tokens):
-        outputs = model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
+        outputs = model(input_ids=input_ids, past_key_values=past_key_values,
+                        use_cache=True, position_offset=position_offset)
         next_token = sample_token(
             outputs.logits[:, -1, :],
             temperature=params.temperature,
