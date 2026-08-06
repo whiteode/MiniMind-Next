@@ -14,36 +14,16 @@ from queue import Queue
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
-from scripts.Model.model_minimind import MiniMindConfig, MiniMindForCausalLM
-from scripts.Model.model_lora import apply_lora, load_lora
+from scripts.Deploy.model_loader import init_model
+from scripts.Deploy.kv_generate import generate_kv
+from scripts.Deploy.prefix_cache import MAX_PREFIX_CACHE, find_prefix, store_prefix
+from scripts.Deploy.chat_streamer import CustomStreamer
 
 warnings.filterwarnings('ignore')
 
 app = FastAPI()
 
-
-def init_model(args):
-    tokenizer = AutoTokenizer.from_pretrained(args.load_from)
-    if 'model' in args.load_from.lower():
-        moe_suffix = '_moe' if args.use_moe else ''
-        ckp = f'{args.save_dir}/{args.weight}_{args.hidden_size}{moe_suffix}.pth'
-        model = MiniMindForCausalLM(MiniMindConfig(
-            hidden_size=args.hidden_size,
-            num_hidden_layers=args.num_hidden_layers,
-            max_seq_len=args.max_seq_len,
-            use_moe=bool(args.use_moe),
-            inference_rope_scaling=args.inference_rope_scaling
-        ))
-        model.load_state_dict(torch.load(ckp, map_location=device), strict=True)
-        if args.lora_weight != 'None':
-            apply_lora(model)
-            load_lora(model, f'{args.save_dir}/lora/{args.lora_weight}_{args.hidden_size}.pth')
-    else:
-        model = AutoModelForCausalLM.from_pretrained(args.load_from, trust_remote_code=True)
-    print(f'MiniMind模型参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M(illion)')
-    return model.eval().to(device), tokenizer
-
+ENABLE_KV = False          # 由 --enable_kv 开启：跨请求 prefix cache（复用已算 K/V）
 
 class ChatRequest(BaseModel):
     model: str
@@ -55,38 +35,55 @@ class ChatRequest(BaseModel):
     tools: list = []
 
 
-class CustomStreamer(TextStreamer):
-    def __init__(self, tokenizer, queue):
-        super().__init__(tokenizer, skip_prompt=True, skip_special_tokens=True)
-        self.queue = queue
-        self.tokenizer = tokenizer
+def generate_response(model, tokenizer, new_prompt, max_new_tokens, temperature, top_p, streamer=None):
+    """生成回复（仅返回新增 token 的 ids）。
+    ENABLE_KV 时走前缀缓存 + generate_kv，否则走 model.generate。"""
+    inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True).to(device)
 
-    def on_finalized_text(self, text: str, stream_end: bool = False):
-        self.queue.put(text)
-        if stream_end:
-            self.queue.put(None)
+    if ENABLE_KV:
+        if streamer is not None:
+            streamer.put(inputs.input_ids)   # 模拟 HF generate：先 put prompt（skip_prompt 会跳过），避免吞掉第一个生成 token
+        full_ids = inputs.input_ids[0].tolist()
+        prefix_len, past_key_values = find_prefix(full_ids)
+        print(f'[PrefixCache] 前缀命中 {prefix_len}/{len(full_ids)} token，prefill 增量 {len(full_ids) - prefix_len}')
+        # 只把增量喂给模型；前缀未命中（prefix_len=0）时 past_key_values=None → 全量 prefill
+        chunk_ids = torch.tensor(full_ids[prefix_len:], dtype=torch.long, device=device).unsqueeze(0)
+        all_ids = torch.tensor(full_ids, dtype=torch.long, device=device).unsqueeze(0)
+        generated_ids, past_key_values, all_ids_new = generate_kv(
+            model, chunk_ids, all_ids, past_key_values,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=1.0,
+            eos_token_id=tokenizer.eos_token_id,
+            streamer=streamer,
+        )
+        store_prefix(all_ids_new[0].tolist(), past_key_values)
+        return generated_ids
+
+    with torch.no_grad():
+        generated_ids = model.generate(
+            inputs.input_ids,
+            max_length=inputs.input_ids.shape[1] + max_new_tokens,
+            do_sample=True,
+            attention_mask=inputs.attention_mask,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            top_p=top_p,
+            temperature=temperature,
+            streamer=streamer,
+        )
+    return generated_ids[:, inputs.input_ids.shape[1]:]
 
 
 def generate_stream_response(messages, temperature, top_p, max_tokens):
     try:
-        new_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)[-max_tokens:]
-        inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True).to(device)
-
+        new_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         queue = Queue()
         streamer = CustomStreamer(tokenizer, queue)
 
         def _generate():
-            model.generate(
-                inputs.input_ids,
-                max_new_tokens=max_tokens,
-                do_sample=True,
-                temperature=temperature,
-                top_p=top_p,
-                attention_mask=inputs.attention_mask,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                streamer=streamer
-            )
+            generate_response(model, tokenizer, new_prompt, max_tokens, temperature, top_p, streamer=streamer)
 
         Thread(target=_generate).start()
 
@@ -127,20 +124,14 @@ async def chat_completions(request: ChatRequest):
                 request.messages,
                 tokenize=False,
                 add_generation_prompt=True
-            )[-request.max_tokens:]
-            inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True).to(device)
-            with torch.no_grad():
-                generated_ids = model.generate(
-                    inputs["input_ids"],
-                    max_length=inputs["input_ids"].shape[1] + request.max_tokens,
-                    do_sample=True,
-                    attention_mask=inputs["attention_mask"],
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                    top_p=request.top_p,
-                    temperature=request.temperature
-                )
-                answer = tokenizer.decode(generated_ids[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+            )
+            generated_ids = generate_response(
+                model, tokenizer, new_prompt,
+                max_new_tokens=request.max_tokens,
+                temperature=request.temperature,
+                top_p=request.top_p,
+            )
+            answer = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
             return {
                 "id": f"chatcmpl-{int(time.time())}",
                 "object": "chat.completion",
@@ -186,11 +177,14 @@ if __name__ == "__main__":
     parser.add_argument('--lora_weight', default='None', type=str, help="LoRA权重名称（None表示不使用，可选：lora_identity, lora_medical）")
     parser.add_argument('--hidden_size', default=512, type=int, help="隐藏层维度（512=Small-26M, 640=MoE-145M, 768=Base-104M）")
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量（Small/MoE=8, Base=16）")
-    parser.add_argument('--max_seq_len', default=8192, type=int, help="最大序列长度")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
     parser.add_argument('--inference_rope_scaling', default=False, action='store_true', help="启用RoPE位置编码外推（4倍，仅解决位置编码问题）")
+    parser.add_argument('--enable_kv', default=False, action='store_true', help="启用跨请求 prefix cache：多轮对话复用已算 K/V，只 prefill 新增部分")
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu', type=str, help="运行设备")
     args = parser.parse_args()
+    ENABLE_KV = args.enable_kv
     device = args.device
     model, tokenizer = init_model(args)
+    if ENABLE_KV:
+        print(f'[Prefix Cache] 已启用，最多缓存 {MAX_PREFIX_CACHE} 个会话的 K/V')
     uvicorn.run(app, host="0.0.0.0", port=8998)

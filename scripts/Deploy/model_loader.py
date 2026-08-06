@@ -24,7 +24,7 @@ def init_model(args):
         model = MiniMindForCausalLM(config)
         moe_suffix = '_moe' if args.use_moe else ''
         ckp = f'./{args.save_dir}/{args.weight}_{args.hidden_size}{moe_suffix}.pth'
-        model.load_state_dict(torch.load(ckp, map_location=args.device, weights_only=False), strict=True)
+        model.load_state_dict(torch.load(ckp, map_location=args.device, weights_only=True), strict=True)
         if args.lora_weight != 'None':
             apply_lora(model)
             load_lora(model, f'./{args.save_dir}/lora/{args.lora_weight}_{args.hidden_size}.pth')
