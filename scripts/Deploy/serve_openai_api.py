@@ -1,3 +1,4 @@
+"""MiniMind 的 OpenAI 兼容 API 服务：支持跨请求 prefix cache（--enable_kv）。"""
 import argparse
 import json
 import os
@@ -9,21 +10,28 @@ import torch
 import warnings
 import uvicorn
 
+from dataclasses import dataclass
 from threading import Thread
 from queue import Queue
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from scripts.Deploy.model_loader import init_model
-from scripts.Deploy.kv_generate import generate_kv
+from transformers import AutoTokenizer
+from scripts.Deploy.model_loader import add_model_args, config_from_args, init_model
+from scripts.Deploy.kv_generate import SamplingParams, generate_kv
 from scripts.Deploy.prefix_cache import MAX_PREFIX_CACHE, find_prefix, store_prefix
 from scripts.Deploy.chat_streamer import CustomStreamer
 
 warnings.filterwarnings('ignore')
 
-app = FastAPI()
 
-ENABLE_KV = False          # 由 --enable_kv 开启：跨请求 prefix cache（复用已算 K/V）
+@dataclass
+class ServerState:
+    """服务运行期状态：模型、分词器与是否启用 prefix cache。"""
+    model: torch.nn.Module
+    tokenizer: AutoTokenizer
+    enable_kv: bool = False
+
 
 class ChatRequest(BaseModel):
     model: str
@@ -35,34 +43,32 @@ class ChatRequest(BaseModel):
     tools: list = []
 
 
-def generate_response(model, tokenizer, new_prompt, max_new_tokens, temperature, top_p, streamer=None):
+def generate_response(state: ServerState, new_prompt, max_new_tokens, temperature, top_p, streamer=None):
     """生成回复（仅返回新增 token 的 ids）。
-    ENABLE_KV 时走前缀缓存 + generate_kv，否则走 model.generate。"""
-    inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True).to(device)
+    enable_kv 时走前缀缓存 + generate_kv，否则走 model.generate。"""
+    tokenizer = state.tokenizer
+    inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True).to(state.model.device)
 
-    if ENABLE_KV:
+    if state.enable_kv:
         if streamer is not None:
             streamer.put(inputs.input_ids)   # 模拟 HF generate：先 put prompt（skip_prompt 会跳过），避免吞掉第一个生成 token
         full_ids = inputs.input_ids[0].tolist()
         prefix_len, past_key_values = find_prefix(full_ids)
         print(f'[PrefixCache] 前缀命中 {prefix_len}/{len(full_ids)} token，prefill 增量 {len(full_ids) - prefix_len}')
         # 只把增量喂给模型；前缀未命中（prefix_len=0）时 past_key_values=None → 全量 prefill
-        chunk_ids = torch.tensor(full_ids[prefix_len:], dtype=torch.long, device=device).unsqueeze(0)
-        all_ids = torch.tensor(full_ids, dtype=torch.long, device=device).unsqueeze(0)
+        chunk_ids = torch.tensor(full_ids[prefix_len:], dtype=torch.long, device=state.model.device).unsqueeze(0)
+        all_ids = torch.tensor(full_ids, dtype=torch.long, device=state.model.device).unsqueeze(0)
         generated_ids, past_key_values, all_ids_new = generate_kv(
-            model, chunk_ids, all_ids, past_key_values,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            repetition_penalty=1.0,
+            state.model, chunk_ids, all_ids, past_key_values,
             eos_token_id=tokenizer.eos_token_id,
+            params=SamplingParams(max_new_tokens=max_new_tokens, temperature=temperature, top_p=top_p),
             streamer=streamer,
         )
         store_prefix(all_ids_new[0].tolist(), past_key_values)
         return generated_ids
 
     with torch.no_grad():
-        generated_ids = model.generate(
+        generated_ids = state.model.generate(
             inputs.input_ids,
             max_length=inputs.input_ids.shape[1] + max_new_tokens,
             do_sample=True,
@@ -76,14 +82,14 @@ def generate_response(model, tokenizer, new_prompt, max_new_tokens, temperature,
     return generated_ids[:, inputs.input_ids.shape[1]:]
 
 
-def generate_stream_response(messages, temperature, top_p, max_tokens):
+def generate_stream_response(state: ServerState, messages, temperature, top_p, max_tokens):
     try:
-        new_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        new_prompt = state.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         queue = Queue()
-        streamer = CustomStreamer(tokenizer, queue)
+        streamer = CustomStreamer(state.tokenizer, queue)
 
         def _generate():
-            generate_response(model, tokenizer, new_prompt, max_tokens, temperature, top_p, streamer=streamer)
+            generate_response(state, new_prompt, max_tokens, temperature, top_p, streamer=streamer)
 
         Thread(target=_generate).start()
 
@@ -106,32 +112,36 @@ def generate_stream_response(messages, temperature, top_p, max_tokens):
         yield json.dumps({"error": str(e)})
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: ChatRequest):
-    try:
-        if request.stream:
-            return StreamingResponse(
-                (f"data: {chunk}\n\n" for chunk in generate_stream_response(
-                    messages=request.messages,
-                    temperature=request.temperature,
-                    top_p=request.top_p,
-                    max_tokens=request.max_tokens
-                )),
-                media_type="text/event-stream"
-            )
-        else:
-            new_prompt = tokenizer.apply_chat_template(
+def create_app(state: ServerState) -> FastAPI:
+    app = FastAPI()
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(request: ChatRequest):
+        try:
+            if request.stream:
+                return StreamingResponse(
+                    (f"data: {chunk}\n\n" for chunk in generate_stream_response(
+                        state=state,
+                        messages=request.messages,
+                        temperature=request.temperature,
+                        top_p=request.top_p,
+                        max_tokens=request.max_tokens,
+                    )),
+                    media_type="text/event-stream"
+                )
+
+            new_prompt = state.tokenizer.apply_chat_template(
                 request.messages,
                 tokenize=False,
                 add_generation_prompt=True
             )
             generated_ids = generate_response(
-                model, tokenizer, new_prompt,
+                state, new_prompt,
                 max_new_tokens=request.max_tokens,
                 temperature=request.temperature,
                 top_p=request.top_p,
             )
-            answer = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+            answer = state.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
             return {
                 "id": f"chatcmpl-{int(time.time())}",
                 "object": "chat.completion",
@@ -145,46 +155,24 @@ async def chat_completions(request: ChatRequest):
                     }
                 ]
             }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return app
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Server for MiniMind")
+    add_model_args(parser)
+    parser.add_argument('--enable_kv', default=False, action='store_true', help="启用跨请求 prefix cache：多轮对话复用已算 K/V，只 prefill 新增部分")
+    args = parser.parse_args()
+
+    model, tokenizer = init_model(config_from_args(args))
+    state = ServerState(model=model, tokenizer=tokenizer, enable_kv=args.enable_kv)
+    if args.enable_kv:
+        print(f'[Prefix Cache] 已启用，最多缓存 {MAX_PREFIX_CACHE} 个会话的 K/V')
+    uvicorn.run(create_app(state), host="0.0.0.0", port=8998)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Server for MiniMind")
-    parser.add_argument('--load_from', default='scripts/Model', type=str, help="模型加载路径（model=原生torch权重，其他路径=transformers格式）")
-    parser.add_argument('--save_dir', default='models', type=str, help="模型权重目录")
-    parser.add_argument('--weight', default='full_sft', type=str, help=(
-        "权重名称前缀，用于指定加载哪一阶段训练出的模型权重。"
-        "各选项含义：\n"
-        "  pretrain   - 预训练阶段（在海量无标注文本上学习语言建模，得到基础语言能力）\n"
-        "  full_sft   - 全量指令微调（在指令数据集上全参数微调，对齐指令遵循能力，默认值）\n"
-        "  dpo        - DPO偏好优化（Direct Preference Optimization 直接偏好优化）\n"
-        "  reason     - 推理微调（针对数学、逻辑等推理任务进行专项微调）\n"
-        "  ppo_actor  - PPO策略网络：Proximal Policy Optimization 中的 Actor 网络权重。\n"
-        "               Actor 网络负责根据当前状态输出动作分布（即下一个 token 的概率分布），\n"
-        "               Critic 网络评估状态价值并计算 Advantage 函数，\n"
-        "               PPO 通过裁剪（clip）策略更新幅度来保证训练的稳定性，\n"
-        "               此权重即 RLHF 阶段中 PPO 训练完成后 Actor 网络的参数快照\n"
-        "  grpo       - GRPO策略优化：Group Relative Policy Optimization，对 PPO 的一种改进变体。\n"
-        "               核心思想：对同一个 prompt 采样多个回复构成一个 group，\n"
-        "               以组内回复的相对优势（而非绝对奖励模型）作为优化信号，\n"
-        "               从而消除对独立 Critic 价值网络的依赖，降低训练开销\n"
-        "  spo        - SPO偏好优化：Safe Policy Optimization，在偏好优化中引入安全约束。\n"
-        "               相较于 DPO 仅关注偏好对齐，SPO 额外约束模型在敏感话题上的输出，\n"
-        "               通过拉格朗日乘子法在奖励最大化与安全约束之间动态权衡，\n"
-        "               确保模型既对齐偏好又满足安全性要求"
-    ))
-    parser.add_argument('--lora_weight', default='None', type=str, help="LoRA权重名称（None表示不使用，可选：lora_identity, lora_medical）")
-    parser.add_argument('--hidden_size', default=512, type=int, help="隐藏层维度（512=Small-26M, 640=MoE-145M, 768=Base-104M）")
-    parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量（Small/MoE=8, Base=16）")
-    parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
-    parser.add_argument('--inference_rope_scaling', default=False, action='store_true', help="启用RoPE位置编码外推（4倍，仅解决位置编码问题）")
-    parser.add_argument('--enable_kv', default=False, action='store_true', help="启用跨请求 prefix cache：多轮对话复用已算 K/V，只 prefill 新增部分")
-    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu', type=str, help="运行设备")
-    args = parser.parse_args()
-    ENABLE_KV = args.enable_kv
-    device = args.device
-    model, tokenizer = init_model(args)
-    if ENABLE_KV:
-        print(f'[Prefix Cache] 已启用，最多缓存 {MAX_PREFIX_CACHE} 个会话的 K/V')
-    uvicorn.run(app, host="0.0.0.0", port=8998)
+    main()

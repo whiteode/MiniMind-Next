@@ -5,6 +5,7 @@ from threading import Thread
 import torch
 import numpy as np
 import streamlit as st
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
 st.set_page_config(page_title="MiniMind", initial_sidebar_state="collapsed")
 
@@ -323,6 +324,4 @@ def main():
 
 
 if __name__ == "__main__":
-    from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
-
     main()

@@ -32,3 +32,9 @@ def store_prefix(full_ids, past_key_values):
         _cache.insert(0, (full_ids, past_key_values))
         if len(_cache) > MAX_PREFIX_CACHE:
             _cache.pop()
+
+
+def clear():
+    """清空缓存（主要供测试使用）。"""
+    with _lock:
+        _cache.clear()
