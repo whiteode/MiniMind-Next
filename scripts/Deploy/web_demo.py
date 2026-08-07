@@ -1,11 +1,29 @@
+import os
 import random
 import re
+import sys
 from threading import Thread
 
 import torch
 import numpy as np
 import streamlit as st
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+
+
+def _require_streamlit_run():
+    """web_demo 是 Streamlit 应用，必须用 `streamlit run` 启动（裸 `python` 跑没有运行时）。"""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        is_streamlit = get_script_run_ctx() is not None
+    except Exception:
+        is_streamlit = False
+    if not is_streamlit:
+        print("错误：web_demo.py 是 Streamlit 应用，请用以下命令启动：")
+        print("  streamlit run scripts/Deploy/web_demo.py")
+        sys.exit(1)
+
+
+_require_streamlit_run()
 
 st.set_page_config(page_title="MiniMind", initial_sidebar_state="collapsed")
 
@@ -177,8 +195,13 @@ else:
         "MiniMind2-Small (0.02B)": ["MiniMind2-Small", "MiniMind2-Small"]
     }
 
+    def resolve_model_path(name):
+        """优先使用本地 resource/<name>（离线可用），否则退回 HF repo id（需联网）。"""
+        local = os.path.join('resource', name)
+        return local if os.path.isdir(local) else name
+
     selected_model = st.sidebar.selectbox('Models', list(MODEL_PATHS.keys()), index=2)  # 默认选择 MiniMind2
-    model_path = MODEL_PATHS[selected_model][0]
+    model_path = resolve_model_path(MODEL_PATHS[selected_model][0])
     slogan = f"Hi, I'm {MODEL_PATHS[selected_model][1]}"
 
 image_url = "https://www.modelscope.cn/api/v1/studio/gongjy/MiniMind/repo?Revision=master&FilePath=images%2Flogo2.png&View=true"
