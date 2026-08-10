@@ -83,3 +83,32 @@ def generate_kv(model, input_ids, all_ids, past_key_values, eos_token_id,
     if not generated:
         return torch.empty(1, 0, dtype=torch.long, device=input_ids.device), past_key_values, all_ids
     return torch.cat(generated, dim=1), past_key_values, all_ids
+
+
+@torch.no_grad()
+def generate_hf_cache(model, input_ids, past_key_values, eos_token_id,
+                      max_new_tokens=8192, temperature=0.85, top_p=0.85,
+                      streamer=None):
+    """HF 模型（LlamaForCausalLM 等）跨轮解码：维护 transformers 的 Cache 对象（DynamicCache）。
+    与 generate_kv 同思路，但缓存容器 / 张量布局走 HF 标准接口，位置由 cache 长度自动推导。
+    返回 (生成token张量, 更新后的cache)。"""
+    generated = []
+    cur_input = input_ids
+    cur_cache = past_key_values
+    for _ in range(max_new_tokens):
+        outputs = model(input_ids=cur_input, past_key_values=cur_cache, use_cache=True)
+        next_token = sample_token(outputs.logits[:, -1, :], temperature=temperature, top_p=top_p)
+        generated.append(next_token)
+        cur_input = next_token
+        cur_cache = outputs.past_key_values
+        if streamer is not None:
+            streamer.put(next_token)
+        if next_token.item() == eos_token_id:
+            break
+
+    if streamer is not None:
+        streamer.end()
+
+    if not generated:
+        return torch.empty(1, 0, dtype=torch.long, device=input_ids.device), cur_cache
+    return torch.cat(generated, dim=1), cur_cache

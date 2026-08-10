@@ -9,6 +9,9 @@ import numpy as np
 import streamlit as st
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
+sys.path.insert(0, os.getcwd())
+from scripts.Deploy.kv_generate import generate_hf_cache
+
 
 def _require_streamlit_run():
     """web_demo 是 Streamlit 应用，必须用 `streamlit run` 启动（裸 `python` 跑没有运行时）。"""
@@ -177,6 +180,7 @@ st.session_state.history_chat_num = st.sidebar.slider("Number of Historical Dial
 # st.session_state.history_chat_num = 0
 st.session_state.max_new_tokens = st.sidebar.slider("Max Sequence Length", 256, 8192, 8192, step=1)
 st.session_state.temperature = st.sidebar.slider("Temperature", 0.6, 1.2, 0.85, step=0.01)
+st.session_state.enable_kv = st.sidebar.checkbox("启用跨轮 KV 缓存（多轮加速，保留完整历史）", value=False)
 
 model_source = st.sidebar.radio("选择模型来源", ["本地模型", "API"], index=0)
 
@@ -237,6 +241,15 @@ def main():
     if "messages" not in st.session_state:
         st.session_state.messages = []
         st.session_state.chat_messages = []
+    if "kv_cache" not in st.session_state:
+        st.session_state.kv_cache = None
+        st.session_state.kv_all_ids = None
+        st.session_state.kv_model_path = None
+    if model_source == "本地模型" and st.session_state.kv_model_path != model_path:
+        # 切换了模型 → 旧缓存的 K/V 失效，重置
+        st.session_state.kv_cache = None
+        st.session_state.kv_all_ids = None
+        st.session_state.kv_model_path = model_path
 
     messages = st.session_state.messages
 
@@ -302,40 +315,76 @@ def main():
                 random_seed = random.randint(0, 2 ** 32 - 1)
                 setup_seed(random_seed)
 
-                st.session_state.chat_messages = system_prompt + st.session_state.chat_messages[
-                                                                 -(st.session_state.history_chat_num + 1):]
-                new_prompt = tokenizer.apply_chat_template(
-                    st.session_state.chat_messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-
-                inputs = tokenizer(
-                    new_prompt,
-                    return_tensors="pt",
-                    truncation=True
-                ).to(device)
-
                 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-                generation_kwargs = {
-                    "input_ids": inputs.input_ids,
-                    "max_length": inputs.input_ids.shape[1] + st.session_state.max_new_tokens,
-                    "num_return_sequences": 1,
-                    "do_sample": True,
-                    "attention_mask": inputs.attention_mask,
-                    "pad_token_id": tokenizer.pad_token_id,
-                    "eos_token_id": tokenizer.eos_token_id,
-                    "temperature": st.session_state.temperature,
-                    "top_p": 0.85,
-                    "streamer": streamer,
-                }
 
-                Thread(target=model.generate, kwargs=generation_kwargs).start()
+                if st.session_state.enable_kv:
+                    # ---------- 跨轮前缀缓存路径（HF DynamicCache） ----------
+                    new_prompt = tokenizer.apply_chat_template(
+                        st.session_state.messages, tokenize=False, add_generation_prompt=True)
+                    full_ids = tokenizer(new_prompt, truncation=True).input_ids
+
+                    cached = st.session_state.kv_all_ids[0].tolist() if st.session_state.kv_all_ids is not None else None
+                    if cached is not None and full_ids[:len(cached)] == cached:
+                        # 前缀命中：只 prefill 增量
+                        chunk_ids = torch.tensor(full_ids[len(cached):], dtype=torch.long, device=device).unsqueeze(0)
+                        kv_cache = st.session_state.kv_cache
+                    else:
+                        # 前缀不匹配（删除消息 / 历史变化）→ 全量重算
+                        kv_cache = None
+                        chunk_ids = torch.tensor(full_ids, dtype=torch.long, device=device).unsqueeze(0)
+                    st.session_state.kv_all_ids = torch.tensor(full_ids, dtype=torch.long, device=device).unsqueeze(0)
+
+                    kv_result = {}
+
+                    def _generate_kv():
+                        _, kv_result["cache"] = generate_hf_cache(
+                            model, chunk_ids, kv_cache,
+                            max_new_tokens=st.session_state.max_new_tokens,
+                            temperature=st.session_state.temperature,
+                            top_p=0.85,
+                            eos_token_id=tokenizer.eos_token_id,
+                            streamer=streamer,
+                        )
+
+                    Thread(target=_generate_kv).start()
+                else:
+                    # ---------- 原路径：全量重编码 + model.generate ----------
+                    st.session_state.chat_messages = system_prompt + st.session_state.chat_messages[
+                                                                     -(st.session_state.history_chat_num + 1):]
+                    new_prompt = tokenizer.apply_chat_template(
+                        st.session_state.chat_messages,
+                        tokenize=False,
+                        add_generation_prompt=True
+                    )
+
+                    inputs = tokenizer(
+                        new_prompt,
+                        return_tensors="pt",
+                        truncation=True
+                    ).to(device)
+
+                    generation_kwargs = {
+                        "input_ids": inputs.input_ids,
+                        "max_length": inputs.input_ids.shape[1] + st.session_state.max_new_tokens,
+                        "num_return_sequences": 1,
+                        "do_sample": True,
+                        "attention_mask": inputs.attention_mask,
+                        "pad_token_id": tokenizer.pad_token_id,
+                        "eos_token_id": tokenizer.eos_token_id,
+                        "temperature": st.session_state.temperature,
+                        "top_p": 0.85,
+                        "streamer": streamer,
+                    }
+
+                    Thread(target=model.generate, kwargs=generation_kwargs).start()
 
                 answer = ""
                 for new_text in streamer:
                     answer += new_text
                     placeholder.markdown(process_assistant_content(answer), unsafe_allow_html=True)
+
+                if st.session_state.enable_kv:
+                    st.session_state.kv_cache = kv_result.get("cache")
 
             messages.append({"role": "assistant", "content": answer})
             st.session_state.chat_messages.append({"role": "assistant", "content": answer})
