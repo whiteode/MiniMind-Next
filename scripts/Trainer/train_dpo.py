@@ -9,13 +9,15 @@ import warnings
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
-from contextlib import nullcontext
 from torch import optim
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, DistributedSampler
-from scripts.Model.model_minimind import MiniMindConfig
+from torch.utils.data import DistributedSampler
+
 from scripts.Dataset.lm_dataset import DPODataset
-from scripts.Trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
+from scripts.Trainer.train_common import (
+    add_train_args, init_train_env, make_lm_config, make_autocast_ctx, init_wandb,
+    get_ckp_data, load_resume_state, wrap_ddp, for_each_epoch, save_checkpoint,
+)
+from scripts.Trainer.trainer_utils import get_lr, Logger, is_main_process, init_model
 
 warnings.filterwarnings('ignore')
 
@@ -106,18 +108,8 @@ def train_epoch(epoch, loader, iters, ref_model, lm_config, start_step=0, wandb=
                            "epoch_time": eta_min})
 
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
-            model.eval()
-            moe_suffix = '_moe' if lm_config.use_moe else ''
-            ckp = f'{args.save_dir}/{args.save_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
-            raw_model = model.module if isinstance(model, DistributedDataParallel) else model
-            raw_model = getattr(raw_model, '_orig_mod', raw_model)
-            state_dict = raw_model.state_dict()
-            torch.save({k: v.half().cpu() for k, v in state_dict.items()}, ckp)
-            lm_checkpoint(lm_config, weight=args.save_weight, model=model,
-                          optimizer=optimizer, scaler=scaler, epoch=epoch,
-                          step=step, wandb=wandb, save_dir='checkpoints')
-            model.train()
-            del state_dict
+            save_checkpoint(lm_config, model, optimizer, args, epoch, step,
+                            scaler=scaler, wandb=wandb)
 
         del x_chosen, x_rejected, y_chosen, y_rejected, mask_chosen, mask_rejected, x, y, mask
         del ref_outputs, ref_logits, ref_log_probs, outputs, logits, policy_log_probs, loss
@@ -125,56 +117,22 @@ def train_epoch(epoch, loader, iters, ref_model, lm_config, start_step=0, wandb=
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind DPO (Direct Preference Optimization)")
-    parser.add_argument("--save_dir",          type=str, default="models",             help="模型保存目录")
-    parser.add_argument('--save_weight',       default='dpo',            type=str,    help="保存权重的前缀名")
-    parser.add_argument("--epochs",            type=int, default=1,                    help="训练轮数（DPO 通常只需 1 epoch）")
-    parser.add_argument("--batch_size",        type=int, default=4,                    help="batch size（注意 chosen+rejected 拼接后显存翻倍）")
-    parser.add_argument("--learning_rate",     type=float, default=4e-8,               help="初始学习率（建议<=5e-8避免遗忘）")
-    parser.add_argument("--device",            type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
-    parser.add_argument("--dtype",             type=str, default="bfloat16",           help="混合精度类型")
-    parser.add_argument("--num_workers",       type=int, default=8,                    help="数据加载线程数")
-    parser.add_argument("--accumulation_steps", type=int, default=1,                   help="梯度累积步数")
-    parser.add_argument("--grad_clip",         type=float, default=1.0,                help="梯度裁剪阈值")
-    parser.add_argument("--log_interval",      type=int, default=100,                  help="日志打印间隔")
-    parser.add_argument("--save_interval",     type=int, default=100,                  help="模型保存间隔")
-    parser.add_argument('--hidden_size',       default=512,     type=int,              help="Transformer 隐藏层维度")
-    parser.add_argument('--num_hidden_layers', default=8,       type=int,              help="Transformer 层数")
-    parser.add_argument('--max_seq_len',       default=1024,    type=int,              help="训练的最大序列长度（DPO 通常需要比 SFT 更长的序列）")
-    parser.add_argument('--use_moe',           default=0,       type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
-    parser.add_argument("--data_path",         type=str, default="resource/minimind_dataset/dpo.jsonl", help="DPO训练数据路径（含 chosen/rejected 对）")
-    parser.add_argument('--from_weight',       default='full_sft', type=str,            help="基于哪个权重训练（通常是 full_sft 或 lora_xxx）")
-    parser.add_argument('--from_resume',       default=0,  type=int, choices=[0, 1],  help="是否自动检测&续训（0=否，1=是）")
-    parser.add_argument('--beta',              default=0.1, type=float,                help="DPO loss 中的 beta 温度参数")
-    parser.add_argument("--use_wandb",         action="store_true",                     help="是否使用 wandb / swanlab")
-    parser.add_argument("--wandb_project",     type=str, default="MiniMind-DPO",        help="wandb 项目名")
-    parser.add_argument("--use_compile",       default=0,  type=int, choices=[0, 1],  help="是否使用 torch.compile 加速（0=否，1=是）")
+    parser.add_argument('--beta', default=0.1, type=float, help="DPO loss 中的 beta 温度参数")
+    add_train_args(parser, save_weight='dpo', epochs=1, batch_size=4,
+                   learning_rate=4e-8, save_interval=100, max_seq_len=1024,
+                   data_path='resource/minimind_dataset/dpo.jsonl',
+                   wandb_project='MiniMind-DPO', from_weight='full_sft')
     args = parser.parse_args()
 
-    local_rank = init_distributed_mode()
-    if dist.is_initialized():
-        args.device = f"cuda:{local_rank}"
-    setup_seed(42 + (dist.get_rank() if dist.is_initialized() else 0))
-
-    os.makedirs(args.save_dir, exist_ok=True)
-    lm_config = MiniMindConfig(hidden_size=args.hidden_size,
-                               num_hidden_layers=args.num_hidden_layers,
-                               use_moe=bool(args.use_moe))
-    ckp_data = lm_checkpoint(lm_config, weight=args.save_weight,
-                             save_dir='checkpoints') if args.from_resume == 1 else None
-
-    device_type = "cuda" if "cuda" in args.device else "cpu"
-    dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
-    autocast_ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
-
-    wandb = None
-    if args.use_wandb and is_main_process():
-        import swanlab as wandb
-        wandb_id = ckp_data.get('wandb_id') if ckp_data else None
-        resume = 'must' if wandb_id else None
-        wandb_run_name = (f"MiniMind-DPO-Epoch-{args.epochs}-"
-                          f"BatchSize-{args.batch_size}-LR-{args.learning_rate}")
-        wandb.init(project=args.wandb_project, name=wandb_run_name,
-                   id=wandb_id, resume=resume)
+    local_rank = init_train_env(args)
+    lm_config = make_lm_config(args)
+    ckp_data = get_ckp_data(args, lm_config)
+    autocast_ctx = make_autocast_ctx(args)
+    wandb = init_wandb(
+        args,
+        f"MiniMind-DPO-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LR-{args.learning_rate}",
+        ckp_data,
+    )
 
     model, tokenizer = init_model(lm_config, args.from_weight, device=args.device)
     if args.use_compile == 1:
@@ -192,32 +150,12 @@ if __name__ == "__main__":
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == 'float16'))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
-    start_epoch, start_step = 0, 0
-    if ckp_data:
-        model.load_state_dict(ckp_data['model'])
-        optimizer.load_state_dict(ckp_data['optimizer'])
-        scaler.load_state_dict(ckp_data['scaler'])
-        start_epoch = ckp_data['epoch']
-        start_step = ckp_data.get('step', 0)
+    start_epoch, start_step = load_resume_state(ckp_data, model, optimizer, scaler=scaler)
+    model = wrap_ddp(model, local_rank)
 
-    if dist.is_initialized():
-        model._ddp_params_and_buffers_to_ignore = {"freqs_cos", "freqs_sin"}
-        model = DistributedDataParallel(model, device_ids=[local_rank])
-
-    for epoch in range(start_epoch, args.epochs):
-        train_sampler and train_sampler.set_epoch(epoch)
-        setup_seed(42 + epoch)
-        indices = torch.randperm(len(train_ds)).tolist()
-        skip = start_step if (epoch == start_epoch and start_step > 0) else 0
-        batch_sampler = SkipBatchSampler(train_sampler or indices, args.batch_size, skip)
-        loader = DataLoader(train_ds, batch_sampler=batch_sampler,
-                            num_workers=args.num_workers, pin_memory=True)
-        if skip > 0:
-            Logger(f'Epoch [{epoch + 1}/{args.epochs}]: 跳过前{start_step}个step，从step {start_step + 1}开始')
-            train_epoch(epoch, loader, len(loader) + skip, ref_model, lm_config,
-                        start_step, wandb, args.beta)
-        else:
-            train_epoch(epoch, loader, len(loader), ref_model, lm_config, 0, wandb, args.beta)
+    for epoch, loader, iters, st, _ in for_each_epoch(
+            train_ds, args, start_epoch, start_step, train_sampler=train_sampler):
+        train_epoch(epoch, loader, iters, ref_model, lm_config, st, wandb, args.beta)
 
     if dist.is_initialized():
         dist.destroy_process_group()

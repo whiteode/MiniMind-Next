@@ -4,22 +4,25 @@ import sys
 sys.path.insert(0, os.getcwd())
 
 import argparse
-import re
 import warnings
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from transformers import AutoTokenizer
-from contextlib import nullcontext
+from transformers import AutoTokenizer, AutoModel
 from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from transformers import AutoModel
-from scripts.Model.model_minimind import MiniMindConfig, MiniMindForCausalLM
+
+from scripts.Model.model_minimind import MiniMindForCausalLM
 from scripts.Dataset.lm_dataset import RLAIFDataset
-from scripts.Trainer.trainer_utils import Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, SkipBatchSampler, init_model
+from scripts.Trainer.train_common import (
+    add_train_args, init_train_env, make_lm_config, make_autocast_ctx, init_wandb,
+    get_ckp_data, load_resume_state, wrap_ddp, for_each_epoch, save_checkpoint,
+    calculate_rewards,
+)
+from scripts.Trainer.trainer_utils import Logger, is_main_process, init_model
 
 warnings.filterwarnings('ignore')
 
@@ -34,74 +37,6 @@ class CriticModel(MiniMindForCausalLM):
         hidden_states = self.model.norm(outputs[0])
         values = self.value_head(hidden_states).squeeze(-1)
         return values
-
-
-def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
-    def reasoning_model_reward(rewards):
-        pattern = r"^<think>\n.*?\n</think>\n<answer>\n.*?\n</answer>$"
-        pattern2 = r"^<think>\n.*?\n</think>\n\n<answer>\n.*?\n</answer>$"
-
-        matches_pattern = [re.match(pattern, response, re.S) for response in responses]
-        matches_pattern2 = [re.match(pattern2, response, re.S) for response in responses]
-
-        format_rewards = []
-        for match_pattern, match_pattern2 in zip(matches_pattern, matches_pattern2):
-            if match_pattern:
-                format_rewards.append(0.5)
-            elif match_pattern2:
-                format_rewards.append(0.5)
-            else:
-                format_rewards.append(0.0)
-        rewards += torch.tensor(format_rewards, device=args.device)
-
-        def mark_num(text):
-            reward = 0
-            if text.count("<think>") == 1:
-                reward += 0.25
-            if text.count("</think>") == 1:
-                reward += 0.25
-            if text.count("<answer>") == 1:
-                reward += 0.25
-            if text.count("</answer>") == 1:
-                reward += 0.25
-            return reward
-
-        mark_rewards = [mark_num(response) for response in responses]
-        rewards += torch.tensor(mark_rewards, device=args.device)
-        return rewards
-
-    rewards = torch.zeros(len(responses), device=args.device)
-
-    if args.reasoning == 1:
-        rewards = reasoning_model_reward(rewards)
-
-    with torch.no_grad():
-        reward_model_scores = []
-        for prompt, response in zip(prompts, responses):
-            pattern = r"<\|im_start\|>(system|user|assistant)\s+(.*?)<\|im_end\|>"
-            matches = re.findall(pattern, prompt, re.DOTALL)
-            messages = [{"role": role, "content": content.strip()} for role, content in matches]
-
-            tmp_chat = messages + [{"role": "assistant", "content": response}]
-            score = reward_model.get_score(reward_tokenizer, tmp_chat)
-
-            scale = 3.0
-            score = max(min(score, scale), -scale)
-
-            if args.reasoning == 1:
-                answer_match = re.search(r'<answer>(.*?)</answer>', response, re.DOTALL)
-                if answer_match:
-                    answer_content = answer_match.group(1).strip()
-                    tmp_chat = messages + [{"role": "assistant", "content": answer_content}]
-                    answer_score = reward_model.get_score(reward_tokenizer, tmp_chat)
-                    answer_score = max(min(answer_score, scale), -scale)
-                    score = score * 0.4 + answer_score * 0.6
-            reward_model_scores.append(score)
-
-        reward_model_scores = torch.tensor(reward_model_scores, device=args.device)
-        rewards += reward_model_scores
-
-    return rewards
 
 
 def ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model, actor_scheduler, critic_scheduler, reward_model, reward_tokenizer, start_step=0, wandb=None):
@@ -122,7 +57,8 @@ def ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model, actor_sche
                 pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
 
         responses_text = [tokenizer.decode(gen_out[i, prompt_length:], skip_special_tokens=True) for i in range(len(prompts))]
-        rewards = calculate_rewards(prompts, responses_text, reward_model, reward_tokenizer)
+        rewards = calculate_rewards(prompts, responses_text, reward_model, reward_tokenizer,
+                                    reasoning=(args.reasoning == 1), device=args.device)
 
         full_mask = (gen_out != tokenizer.pad_token_id).long()
         values_seq = critic_model(input_ids=gen_out, attention_mask=full_mask)
@@ -214,20 +150,11 @@ def ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model, actor_sche
             old_actor_model.to(args.device)
 
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
-            actor_model.eval()
-            moe_suffix = '_moe' if lm_config.use_moe else ''
-            ckp = f'{args.save_dir}/{args.save_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
-            raw_actor = actor_model.module if isinstance(actor_model, DistributedDataParallel) else actor_model
-            raw_actor = getattr(raw_actor, '_orig_mod', raw_actor)
-            actor_state = raw_actor.state_dict()
-            torch.save({k: v.half().cpu() for k, v in actor_state.items()}, ckp)
-            
-            lm_checkpoint(lm_config, weight=args.save_weight, model=actor_model, optimizer=actor_optimizer, 
-                         epoch=epoch, step=step, wandb=wandb, save_dir='checkpoints',
-                         scheduler=actor_scheduler, critic_model=critic_model, 
-                         critic_optimizer=critic_optimizer, critic_scheduler=critic_scheduler)
-            actor_model.train()
-            del actor_state
+            save_checkpoint(lm_config, actor_model, actor_optimizer, args, epoch, step,
+                            scheduler=actor_scheduler, wandb=wandb,
+                            extra_state={'critic_model': critic_model,
+                                         'critic_optimizer': critic_optimizer,
+                                         'critic_scheduler': critic_scheduler})
 
         del enc, gen_out, responses_text, rewards, full_mask, values_seq, values, advantages
         del logits, labels, logp_tokens, final_mask, actor_logp, old_logits, old_logp, ref_logits, ref_logp
@@ -236,57 +163,26 @@ def ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model, actor_sche
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind PPO (Proximal Policy Optimization)")
-    parser.add_argument("--save_dir", type=str, default="models", help="模型保存目录")
-    parser.add_argument('--save_weight', default='ppo_actor', type=str, help="保存权重的前缀名")
-    parser.add_argument("--epochs", type=int, default=1, help="训练轮数")
-    parser.add_argument("--batch_size", type=int, default=2, help="batch size")
-    parser.add_argument("--learning_rate", type=float, default=1e-6, help="Actor学习率")
     parser.add_argument("--critic_learning_rate", type=float, default=1e-6, help="Critic学习率")
-    parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
-    parser.add_argument("--dtype", type=str, default="bfloat16", help="混合精度类型")
-    parser.add_argument("--num_workers", type=int, default=8, help="数据加载线程数")
-    parser.add_argument("--accumulation_steps", type=int, default=1, help="梯度累积步数")
-    parser.add_argument("--grad_clip", type=float, default=1.0, help="梯度裁剪阈值")
-    parser.add_argument("--log_interval", type=int, default=1, help="日志打印间隔")
-    parser.add_argument("--save_interval", type=int, default=10, help="模型保存间隔")
-    parser.add_argument('--hidden_size', default=512, type=int, help="隐藏层维度")
-    parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量")
-    parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
-    parser.add_argument('--max_seq_len', default=66, type=int, help="Prompt最大长度")
     parser.add_argument("--max_gen_len", type=int, default=1536, help="生成的最大长度")
-    parser.add_argument("--data_path", type=str, default="resource/minimind_dataset/rlaif.jsonl", help="RLAIF数据路径")
     parser.add_argument("--clip_epsilon", type=float, default=0.1, help="PPO裁剪参数")
     parser.add_argument("--vf_coef", type=float, default=0.5, help="Value function系数")
     parser.add_argument("--kl_coef", type=float, default=0.02, help="KL散度惩罚系数")
     parser.add_argument("--reasoning", type=int, default=1, choices=[0, 1], help='推理模型类型（0=普通模型，1=推理模型）')
     parser.add_argument("--update_old_actor_freq", type=int, default=4, help="更新old_actor_model的频率")
     parser.add_argument("--reward_model_path", type=str, default="internlm2-1_8b-reward", help="Reward模型路径")
-    parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
-    parser.add_argument("--use_wandb", action="store_true", help="是否使用wandb")
-    parser.add_argument("--wandb_project", type=str, default="MiniMind-PPO", help="wandb项目名")
-    parser.add_argument("--use_compile", default=0, type=int, choices=[0, 1], help="是否使用torch.compile加速（0=否，1=是）")
+    add_train_args(parser, save_weight='ppo_actor', epochs=1, batch_size=2,
+                   learning_rate=1e-6, log_interval=1, save_interval=10,
+                   max_seq_len=66, data_path='resource/minimind_dataset/rlaif.jsonl',
+                   wandb_project='MiniMind-PPO', from_weight=None)
     args = parser.parse_args()
 
-    local_rank = init_distributed_mode()
-    if dist.is_initialized(): args.device = f"cuda:{local_rank}"
-    setup_seed(42 + (dist.get_rank() if dist.is_initialized() else 0))
-    
-    os.makedirs(args.save_dir, exist_ok=True)
-    lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=bool(args.use_moe))
-    ckp_data = lm_checkpoint(lm_config, weight=args.save_weight, save_dir='checkpoints') if args.from_resume==1 else None
-    
-    device_type = "cuda" if "cuda" in args.device else "cpu"
-    dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
-    autocast_ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
-    
-    wandb = None
-    if args.use_wandb and is_main_process():
-        import swanlab as wandb
-        wandb_id = ckp_data.get('wandb_id') if ckp_data else None
-        resume = 'must' if wandb_id else None
-        wandb_run_name = f"MiniMind-PPO-Epoch-{args.epochs}-BS-{args.batch_size}-LR-{args.learning_rate}"
-        wandb.init(project=args.wandb_project, name=wandb_run_name, id=wandb_id, resume=resume)
-    
+    local_rank = init_train_env(args)
+    lm_config = make_lm_config(args)
+    ckp_data = get_ckp_data(args, lm_config)
+    autocast_ctx = make_autocast_ctx(args)
+    wandb = init_wandb(args, f"MiniMind-PPO-Epoch-{args.epochs}-BS-{args.batch_size}-LR-{args.learning_rate}", ckp_data)
+
     base_weight = "reason" if args.reasoning == 1 else "full_sft"
     actor_model, tokenizer = init_model(lm_config, base_weight, device=args.device)
     if args.use_compile == 1:
@@ -297,10 +193,12 @@ if __name__ == "__main__":
     ref_model, _ = init_model(lm_config, base_weight, device=args.device)
     ref_model = ref_model.eval().requires_grad_(False)
     moe_suffix = '_moe' if lm_config.use_moe else ''
-    ckp = f'{args.save_dir}/{base_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
-    state_dict = torch.load(ckp, map_location=args.device)
     critic_model = CriticModel(lm_config)
-    critic_model.load_state_dict(state_dict, strict=False)
+    critic_model.load_state_dict(
+        torch.load(f'{args.save_dir}/{base_weight}_{lm_config.hidden_size}{moe_suffix}.pth',
+                   map_location=args.device),
+        strict=False,
+    )
     critic_model = critic_model.to(args.device)
     reward_model = AutoModel.from_pretrained(
         args.reward_model_path, torch_dtype=torch.float16, trust_remote_code=True
@@ -312,41 +210,23 @@ if __name__ == "__main__":
     actor_optimizer = optim.AdamW(actor_model.parameters(), lr=args.learning_rate)
     critic_optimizer = optim.AdamW(critic_model.parameters(), lr=args.critic_learning_rate)
     loader_for_count = DataLoader(train_ds, batch_size=args.batch_size, sampler=train_sampler)
-    iters = len(loader_for_count)
-    total_optimizer_steps = (iters // args.accumulation_steps) * args.epochs
+    total_optimizer_steps = (len(loader_for_count) // args.accumulation_steps) * args.epochs
     actor_scheduler = CosineAnnealingLR(actor_optimizer, T_max=total_optimizer_steps, eta_min=args.learning_rate / 10)
     critic_scheduler = CosineAnnealingLR(critic_optimizer, T_max=total_optimizer_steps, eta_min=args.critic_learning_rate / 10)
-    
-    start_epoch, start_step = 0, 0
-    if ckp_data:
-        actor_model.load_state_dict(ckp_data['model'])
-        critic_model.load_state_dict(ckp_data['critic_model'])
-        actor_optimizer.load_state_dict(ckp_data['optimizer'])
-        critic_optimizer.load_state_dict(ckp_data['critic_optimizer'])
-        actor_scheduler.load_state_dict(ckp_data['scheduler'])
-        critic_scheduler.load_state_dict(ckp_data['critic_scheduler'])
-        start_epoch = ckp_data['epoch']
-        start_step = ckp_data.get('step', 0)
-    
+
+    start_epoch, start_step = load_resume_state(
+        ckp_data, actor_model, actor_optimizer, scheduler=actor_scheduler,
+        extra=[('critic_model', critic_model), ('critic_optimizer', critic_optimizer),
+               ('critic_scheduler', critic_scheduler)])
+    actor_model = wrap_ddp(actor_model, local_rank)
+    critic_model = wrap_ddp(critic_model, local_rank)
     if dist.is_initialized():
-        actor_model._ddp_params_and_buffers_to_ignore = {"freqs_cos", "freqs_sin"}
-        critic_model._ddp_params_and_buffers_to_ignore = {"freqs_cos", "freqs_sin"}
-        actor_model = DistributedDataParallel(actor_model, device_ids=[local_rank])
-        critic_model = DistributedDataParallel(critic_model, device_ids=[local_rank])
         old_actor_model.to(args.device)
-    
-    for epoch in range(start_epoch, args.epochs):
-        train_sampler and train_sampler.set_epoch(epoch)
-        setup_seed(42 + epoch); indices = torch.randperm(len(train_ds)).tolist()
-        skip = start_step if (epoch == start_epoch and start_step > 0) else 0
-        batch_sampler = SkipBatchSampler(train_sampler or indices, args.batch_size, skip)
-        loader = DataLoader(train_ds, batch_sampler=batch_sampler, num_workers=args.num_workers, pin_memory=True)
-        if skip > 0: 
-            Logger(f'Epoch [{epoch + 1}/{args.epochs}]: 跳过前{start_step}个step，从step {start_step + 1}开始')
-            ppo_train_epoch(epoch, loader, len(loader) + skip, old_actor_model, ref_model, 
-                           actor_scheduler, critic_scheduler, reward_model, reward_tokenizer, start_step, wandb)
-        else:
-            ppo_train_epoch(epoch, loader, len(loader), old_actor_model, ref_model, 
-                           actor_scheduler, critic_scheduler, reward_model, reward_tokenizer, 0, wandb)
-    
-    if dist.is_initialized(): dist.destroy_process_group()
+
+    for epoch, loader, iters, st, _ in for_each_epoch(
+            train_ds, args, start_epoch, start_step, train_sampler=train_sampler):
+        ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model,
+                        actor_scheduler, critic_scheduler, reward_model, reward_tokenizer, st, wandb)
+
+    if dist.is_initialized():
+        dist.destroy_process_group()
