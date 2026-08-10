@@ -1,16 +1,13 @@
 import os
-import random
-import re
 import sys
-from threading import Thread
 
 import torch
-import numpy as np
 import streamlit as st
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
 sys.path.insert(0, os.getcwd())
-from scripts.Deploy.kv_generate import generate_hf_cache
+from scripts.Deploy.web_engine import LocalParams, api_generate, local_generate
+from scripts.Deploy.web_utils import MODEL_PATHS, process_assistant_content, resolve_model_path, seed_generation
 
 
 def _require_streamlit_run():
@@ -30,7 +27,7 @@ _require_streamlit_run()
 
 st.set_page_config(page_title="MiniMind", initial_sidebar_state="collapsed")
 
-st.markdown("""
+WEB_CSS = """
     <style>
         /* 添加操作按钮样式 */
         .stButton button {
@@ -84,157 +81,173 @@ st.markdown("""
         }
 
     </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(WEB_CSS, unsafe_allow_html=True)
 
 system_prompt = []
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def process_assistant_content(content):
-    if model_source == "API" and 'R1' not in api_model_name:
-        return content
-    if model_source != "API" and 'R1' not in MODEL_PATHS[selected_model][1]:
-        return content
-
-    if '<think>' in content and '</think>' in content:
-        content = re.sub(r'(<think>)(.*?)(</think>)',
-                         r'<details style="font-style: italic; background: rgba(222, 222, 222, 0.5); padding: 10px; border-radius: 10px;"><summary style="font-weight:bold;">推理内容（展开）</summary>\2</details>',
-                         content,
-                         flags=re.DOTALL)
-
-    if '<think>' in content and '</think>' not in content:
-        content = re.sub(r'<think>(.*?)$',
-                         r'<details open style="font-style: italic; background: rgba(222, 222, 222, 0.5); padding: 10px; border-radius: 10px;"><summary style="font-weight:bold;">推理中...</summary>\1</details>',
-                         content,
-                         flags=re.DOTALL)
-
-    if '<think>' not in content and '</think>' in content:
-        content = re.sub(r'(.*?)</think>',
-                         r'<details style="font-style: italic; background: rgba(222, 222, 222, 0.5); padding: 10px; border-radius: 10px;"><summary style="font-weight:bold;">推理内容（展开）</summary>\1</details>',
-                         content,
-                         flags=re.DOTALL)
-
-    return content
+image_url = "https://www.modelscope.cn/api/v1/studio/gongjy/MiniMind/repo?Revision=master&FilePath=images%2Flogo2.png&View=true"
 
 
 @st.cache_resource
 def load_model_tokenizer(model_path):
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        trust_remote_code=True
-    )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=True
-    )
+    model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = model.eval().to(device)
     return model, tokenizer
 
 
-def clear_chat_messages():
-    del st.session_state.messages
-    del st.session_state.chat_messages
+def _user_bubble(content, live=False):
+    """用户消息气泡 HTML（live=刚发送的高亮样式）。"""
+    style = 'background-color: gray; color:white;' if live else 'background-color: #ddd; color: black;'
+    return (f'<div style="display: flex; justify-content: flex-end;">'
+            f'<div style="display: inline-block; margin: 10px 0; padding: 8px 12px 8px 12px; {style} border-radius: 10px;">'
+            f'{content}</div></div>')
 
 
-def init_chat_messages():
-    if "messages" in st.session_state:
-        for i, message in enumerate(st.session_state.messages):
-            if message["role"] == "assistant":
-                with st.chat_message("assistant", avatar=image_url):
-                    st.markdown(process_assistant_content(message["content"]), unsafe_allow_html=True)
-                    if st.button("🗑", key=f"delete_{i}"):
-                        st.session_state.messages.pop(i)
-                        st.session_state.messages.pop(i - 1)
-                        st.session_state.chat_messages.pop(i)
-                        st.session_state.chat_messages.pop(i - 1)
-                        st.rerun()
-            else:
-                st.markdown(
-                    f'<div style="display: flex; justify-content: flex-end;"><div style="display: inline-block; margin: 10px 0; padding: 8px 12px 8px 12px;  background-color: #ddd; border-radius: 10px; color: black;">{message["content"]}</div></div>',
-                    unsafe_allow_html=True)
+def render_sidebar():
+    """侧边栏控件（保持 st.* 调用顺序）。返回运行配置 dict。"""
+    st.sidebar.title("模型设定调整")
+    st.session_state.history_chat_num = st.sidebar.slider("Number of Historical Dialogues", 0, 6, 0, step=2)
+    st.session_state.max_new_tokens = st.sidebar.slider("Max Sequence Length", 256, 8192, 8192, step=1)
+    st.session_state.temperature = st.sidebar.slider("Temperature", 0.6, 1.2, 0.85, step=0.01)
+    st.session_state.enable_kv = st.sidebar.checkbox("启用跨轮 KV 缓存（多轮加速，保留完整历史）", value=False)
 
+    model_source = st.sidebar.radio("选择模型来源", ["本地模型", "API"], index=0)
+
+    if model_source == "API":
+        api = {
+            "url": st.sidebar.text_input("API URL", value="http://127.0.0.1:8000/v1"),
+            "model_id": st.sidebar.text_input("Model ID", value="minimind"),
+            "model_name": st.sidebar.text_input("Model Name", value="MiniMind2"),
+            "key": st.sidebar.text_input("API Key", value="none", type="password"),
+        }
+        slogan = f"Hi, I'm {api['model_name']}"
+        model_path, model_display = None, None
     else:
-        st.session_state.messages = []
-        st.session_state.chat_messages = []
+        selected_model = st.sidebar.selectbox('Models', list(MODEL_PATHS.keys()), index=2)  # 默认选择 MiniMind2
+        model_display = MODEL_PATHS[selected_model][1]
+        model_path = resolve_model_path(MODEL_PATHS[selected_model][0])
+        slogan = f"Hi, I'm {model_display}"
+        api = None
 
-    return st.session_state.messages
-
-def regenerate_answer(index):
-    st.session_state.messages.pop()
-    st.session_state.chat_messages.pop()
-    st.rerun()
-
-
-def delete_conversation(index):
-    st.session_state.messages.pop(index)
-    st.session_state.messages.pop(index - 1)
-    st.session_state.chat_messages.pop(index)
-    st.session_state.chat_messages.pop(index - 1)
-    st.rerun()
-
-
-st.sidebar.title("模型设定调整")
-
-# st.sidebar.text("训练数据偏差，增加上下文记忆时\n多轮对话（较单轮）容易出现能力衰减")
-st.session_state.history_chat_num = st.sidebar.slider("Number of Historical Dialogues", 0, 6, 0, step=2)
-# st.session_state.history_chat_num = 0
-st.session_state.max_new_tokens = st.sidebar.slider("Max Sequence Length", 256, 8192, 8192, step=1)
-st.session_state.temperature = st.sidebar.slider("Temperature", 0.6, 1.2, 0.85, step=0.01)
-st.session_state.enable_kv = st.sidebar.checkbox("启用跨轮 KV 缓存（多轮加速，保留完整历史）", value=False)
-
-model_source = st.sidebar.radio("选择模型来源", ["本地模型", "API"], index=0)
-
-if model_source == "API":
-    api_url = st.sidebar.text_input("API URL", value="http://127.0.0.1:8000/v1")
-    api_model_id = st.sidebar.text_input("Model ID", value="minimind")
-    api_model_name = st.sidebar.text_input("Model Name", value="MiniMind2")
-    api_key = st.sidebar.text_input("API Key", value="none", type="password")
-    slogan = f"Hi, I'm {api_model_name}"
-else:
-    MODEL_PATHS = {
-        "MiniMind2-R1 (0.1B)": ["MiniMind2-R1", "MiniMind2-R1"],
-        "MiniMind2-Small-R1 (0.02B)": ["MiniMind2-Small-R1", "MiniMind2-Small-R1"],
-        "MiniMind2 (0.1B)": ["MiniMind2", "MiniMind2"],
-        "MiniMind2-MoE (0.15B)": ["MiniMind2-MoE", "MiniMind2-MoE"],
-        "MiniMind2-Small (0.02B)": ["MiniMind2-Small", "MiniMind2-Small"]
+    return {
+        "model_source": model_source,
+        "api": api,
+        "model_path": model_path,
+        "slogan": slogan,
+        "show_thinking": (api is not None and 'R1' in api["model_name"]) or (api is None and 'R1' in model_display),
     }
 
-    def resolve_model_path(name):
-        """优先使用本地 resource/<name>（离线可用），否则退回 HF repo id（需联网）。"""
-        local = os.path.join('resource', name)
-        return local if os.path.isdir(local) else name
 
-    selected_model = st.sidebar.selectbox('Models', list(MODEL_PATHS.keys()), index=2)  # 默认选择 MiniMind2
-    model_path = resolve_model_path(MODEL_PATHS[selected_model][0])
-    slogan = f"Hi, I'm {MODEL_PATHS[selected_model][1]}"
-
-image_url = "https://www.modelscope.cn/api/v1/studio/gongjy/MiniMind/repo?Revision=master&FilePath=images%2Flogo2.png&View=true"
-
-st.markdown(
-    f'<div style="display: flex; flex-direction: column; align-items: center; text-align: center; margin: 0; padding: 0;">'
-    '<div style="font-style: italic; font-weight: 900; margin: 0; padding-top: 4px; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; width: 100%;">'
-    f'<img src="{image_url}" style="width: 45px; height: 45px; "> '
-    f'<span style="font-size: 26px; margin-left: 10px;">{slogan}</span>'
-    '</div>'
-    '<span style="color: #bbb; font-style: italic; margin-top: 6px; margin-bottom: 10px;">内容完全由AI生成，请务必仔细甄别<br>Content AI-generated, please discern with care</span>'
-    '</div>',
-    unsafe_allow_html=True
-)
+def render_header(slogan):
+    st.markdown(
+        f'<div style="display: flex; flex-direction: column; align-items: center; text-align: center; margin: 0; padding: 0;">'
+        '<div style="font-style: italic; font-weight: 900; margin: 0; padding-top: 4px; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; width: 100%;">'
+        f'<img src="{image_url}" style="width: 45px; height: 45px; "> '
+        f'<span style="font-size: 26px; margin-left: 10px;">{slogan}</span>'
+        '</div>'
+        '<span style="color: #bbb; font-style: italic; margin-top: 6px; margin-bottom: 10px;">内容完全由AI生成，请务必仔细甄别<br>Content AI-generated, please discern with care</span>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
 
-def setup_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+def render_chat_history(messages, show_thinking):
+    """渲染历史消息与删除按钮。"""
+    for i, message in enumerate(messages):
+        if message["role"] == "assistant":
+            with st.chat_message("assistant", avatar=image_url):
+                st.markdown(process_assistant_content(message["content"], show_thinking), unsafe_allow_html=True)
+                if st.button("×", key=f"delete_{i}"):
+                    st.session_state.messages = st.session_state.messages[:i - 1]
+                    st.session_state.chat_messages = st.session_state.chat_messages[:i - 1]
+                    st.rerun()
+        else:
+            st.markdown(_user_bubble(message["content"]), unsafe_allow_html=True)
+
+
+def _handle_api(cfg, placeholder):
+    """调用 OpenAI 兼容 API 并流式渲染回复。"""
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=cfg["api"]["key"], base_url=cfg["api"]["url"])
+        history_num = st.session_state.history_chat_num + 1  # +1 是为了包含当前的用户消息
+        conversation_history = system_prompt + st.session_state.chat_messages[-history_num:]
+        answer = ""
+        for answer in api_generate(client, cfg["api"]["model_id"], conversation_history,
+                                   st.session_state.temperature):
+            placeholder.markdown(process_assistant_content(answer, cfg["show_thinking"]), unsafe_allow_html=True)
+        return answer
+    except Exception as e:
+        answer = f"API调用出错: {str(e)}"
+        placeholder.markdown(answer, unsafe_allow_html=True)
+        return answer
+
+
+def _handle_local(model, tokenizer, cfg, placeholder):
+    """本地模型生成（支持跨轮前缀缓存），流式渲染回复。"""
+    seed_generation()
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    params = LocalParams(
+        max_new_tokens=st.session_state.max_new_tokens,
+        temperature=st.session_state.temperature,
+        top_p=0.85,
+        device=device,
+        use_kv=st.session_state.enable_kv,
+    )
+
+    if params.use_kv:
+        messages_to_send = st.session_state.messages          # KV 模式用完整历史
+    else:
+        st.session_state.chat_messages = system_prompt + st.session_state.chat_messages[
+                                                         -(st.session_state.history_chat_num + 1):]
+        messages_to_send = st.session_state.chat_messages     # 原路径用窗口历史
+
+    kv = {"cache": st.session_state.kv_cache, "all_ids": st.session_state.kv_all_ids}
+    holder = local_generate(model, tokenizer, messages_to_send, params, kv, streamer)
+
+    answer = ""
+    for new_text in streamer:
+        answer += new_text
+        placeholder.markdown(process_assistant_content(answer, cfg["show_thinking"]), unsafe_allow_html=True)
+
+    if params.use_kv:
+        st.session_state.kv_cache = holder.get("cache")
+        st.session_state.kv_all_ids = kv["all_ids"]
+    return answer
+
+
+def handle_prompt(prompt, model, tokenizer, cfg):
+    """处理一轮输入：渲染气泡、生成回复、记录消息。"""
+    messages = st.session_state.messages
+    st.markdown(_user_bubble(prompt, live=True), unsafe_allow_html=True)
+    messages.append({"role": "user", "content": prompt[-st.session_state.max_new_tokens:]})
+    st.session_state.chat_messages.append({"role": "user", "content": prompt[-st.session_state.max_new_tokens:]})
+
+    with st.chat_message("assistant", avatar=image_url):
+        placeholder = st.empty()
+        if cfg["model_source"] == "API":
+            answer = _handle_api(cfg, placeholder)
+        else:
+            answer = _handle_local(model, tokenizer, cfg, placeholder)
+
+    messages.append({"role": "assistant", "content": answer})
+    st.session_state.chat_messages.append({"role": "assistant", "content": answer})
+    with st.empty():
+        if st.button("×", key=f"delete_{len(messages) - 1}"):
+            st.session_state.messages = st.session_state.messages[:-2]
+            st.session_state.chat_messages = st.session_state.chat_messages[:-2]
+            st.rerun()
 
 
 def main():
-    if model_source == "本地模型":
-        model, tokenizer = load_model_tokenizer(model_path)
+    cfg = render_sidebar()
+    render_header(cfg["slogan"])
+
+    if cfg["model_source"] == "本地模型":
+        model, tokenizer = load_model_tokenizer(cfg["model_path"])
     else:
         model, tokenizer = None, None
 
@@ -245,154 +258,24 @@ def main():
         st.session_state.kv_cache = None
         st.session_state.kv_all_ids = None
         st.session_state.kv_model_path = None
-    if model_source == "本地模型" and st.session_state.kv_model_path != model_path:
+    if cfg["model_source"] == "本地模型" and st.session_state.kv_model_path != cfg["model_path"]:
         # 切换了模型 → 旧缓存的 K/V 失效，重置
         st.session_state.kv_cache = None
         st.session_state.kv_all_ids = None
-        st.session_state.kv_model_path = model_path
+        st.session_state.kv_model_path = cfg["model_path"]
 
     messages = st.session_state.messages
-
-    for i, message in enumerate(messages):
-        if message["role"] == "assistant":
-            with st.chat_message("assistant", avatar=image_url):
-                st.markdown(process_assistant_content(message["content"]), unsafe_allow_html=True)
-                if st.button("×", key=f"delete_{i}"):
-                    st.session_state.messages = st.session_state.messages[:i - 1]
-                    st.session_state.chat_messages = st.session_state.chat_messages[:i - 1]
-                    st.rerun()
-        else:
-            st.markdown(
-                f'<div style="display: flex; justify-content: flex-end;"><div style="display: inline-block; margin: 10px 0; padding: 8px 12px 8px 12px;  background-color: gray; border-radius: 10px; color:white; ">{message["content"]}</div></div>',
-                unsafe_allow_html=True)
+    render_chat_history(messages, cfg["show_thinking"])
 
     prompt = st.chat_input(key="input", placeholder="给 MiniMind 发送消息")
-
     if hasattr(st.session_state, 'regenerate') and st.session_state.regenerate:
         prompt = st.session_state.last_user_message
-        regenerate_index = st.session_state.regenerate_index
         delattr(st.session_state, 'regenerate')
         delattr(st.session_state, 'last_user_message')
         delattr(st.session_state, 'regenerate_index')
 
     if prompt:
-        st.markdown(
-            f'<div style="display: flex; justify-content: flex-end;"><div style="display: inline-block; margin: 10px 0; padding: 8px 12px 8px 12px;  background-color: gray; border-radius: 10px; color:white; ">{prompt}</div></div>',
-            unsafe_allow_html=True)
-        messages.append({"role": "user", "content": prompt[-st.session_state.max_new_tokens:]})
-        st.session_state.chat_messages.append({"role": "user", "content": prompt[-st.session_state.max_new_tokens:]})
-
-        with st.chat_message("assistant", avatar=image_url):
-            placeholder = st.empty()
-
-            if model_source == "API":
-                try:
-                    from openai import OpenAI
-
-                    client = OpenAI(
-                        api_key=api_key,
-                        base_url=api_url
-                    )
-                    history_num = st.session_state.history_chat_num + 1  # +1 是为了包含当前的用户消息
-                    conversation_history = system_prompt + st.session_state.chat_messages[-history_num:]
-                    answer = ""
-                    response = client.chat.completions.create(
-                        model=api_model_id,
-                        messages=conversation_history,
-                        stream=True,
-                        temperature=st.session_state.temperature
-                    )
-
-                    for chunk in response:
-                        content = chunk.choices[0].delta.content or ""
-                        answer += content
-                        placeholder.markdown(process_assistant_content(answer), unsafe_allow_html=True)
-
-                except Exception as e:
-                    answer = f"API调用出错: {str(e)}"
-                    placeholder.markdown(answer, unsafe_allow_html=True)
-            else:
-                random_seed = random.randint(0, 2 ** 32 - 1)
-                setup_seed(random_seed)
-
-                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-
-                if st.session_state.enable_kv:
-                    # ---------- 跨轮前缀缓存路径（HF DynamicCache） ----------
-                    new_prompt = tokenizer.apply_chat_template(
-                        st.session_state.messages, tokenize=False, add_generation_prompt=True)
-                    full_ids = tokenizer(new_prompt, truncation=True).input_ids
-
-                    cached = st.session_state.kv_all_ids[0].tolist() if st.session_state.kv_all_ids is not None else None
-                    if cached is not None and full_ids[:len(cached)] == cached:
-                        # 前缀命中：只 prefill 增量
-                        chunk_ids = torch.tensor(full_ids[len(cached):], dtype=torch.long, device=device).unsqueeze(0)
-                        kv_cache = st.session_state.kv_cache
-                    else:
-                        # 前缀不匹配（删除消息 / 历史变化）→ 全量重算
-                        kv_cache = None
-                        chunk_ids = torch.tensor(full_ids, dtype=torch.long, device=device).unsqueeze(0)
-                    st.session_state.kv_all_ids = torch.tensor(full_ids, dtype=torch.long, device=device).unsqueeze(0)
-
-                    kv_result = {}
-
-                    def _generate_kv():
-                        _, kv_result["cache"] = generate_hf_cache(
-                            model, chunk_ids, kv_cache,
-                            max_new_tokens=st.session_state.max_new_tokens,
-                            temperature=st.session_state.temperature,
-                            top_p=0.85,
-                            eos_token_id=tokenizer.eos_token_id,
-                            streamer=streamer,
-                        )
-
-                    Thread(target=_generate_kv).start()
-                else:
-                    # ---------- 原路径：全量重编码 + model.generate ----------
-                    st.session_state.chat_messages = system_prompt + st.session_state.chat_messages[
-                                                                     -(st.session_state.history_chat_num + 1):]
-                    new_prompt = tokenizer.apply_chat_template(
-                        st.session_state.chat_messages,
-                        tokenize=False,
-                        add_generation_prompt=True
-                    )
-
-                    inputs = tokenizer(
-                        new_prompt,
-                        return_tensors="pt",
-                        truncation=True
-                    ).to(device)
-
-                    generation_kwargs = {
-                        "input_ids": inputs.input_ids,
-                        "max_length": inputs.input_ids.shape[1] + st.session_state.max_new_tokens,
-                        "num_return_sequences": 1,
-                        "do_sample": True,
-                        "attention_mask": inputs.attention_mask,
-                        "pad_token_id": tokenizer.pad_token_id,
-                        "eos_token_id": tokenizer.eos_token_id,
-                        "temperature": st.session_state.temperature,
-                        "top_p": 0.85,
-                        "streamer": streamer,
-                    }
-
-                    Thread(target=model.generate, kwargs=generation_kwargs).start()
-
-                answer = ""
-                for new_text in streamer:
-                    answer += new_text
-                    placeholder.markdown(process_assistant_content(answer), unsafe_allow_html=True)
-
-                if st.session_state.enable_kv:
-                    st.session_state.kv_cache = kv_result.get("cache")
-
-            messages.append({"role": "assistant", "content": answer})
-            st.session_state.chat_messages.append({"role": "assistant", "content": answer})
-            with st.empty():
-                if st.button("×", key=f"delete_{len(messages) - 1}"):
-                    st.session_state.messages = st.session_state.messages[:-2]
-                    st.session_state.chat_messages = st.session_state.chat_messages[:-2]
-                    st.rerun()
+        handle_prompt(prompt, model, tokenizer, cfg)
 
 
 if __name__ == "__main__":
