@@ -3,11 +3,12 @@ import sys
 
 import torch
 import streamlit as st
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers import TextIteratorStreamer
 
 sys.path.insert(0, os.getcwd())
+from scripts.Deploy.model_loader import ModelConfig, init_model
 from scripts.Deploy.web_engine import LocalParams, api_generate, local_generate
-from scripts.Deploy.web_utils import MODEL_PATHS, process_assistant_content, resolve_model_path, seed_generation
+from scripts.Deploy.web_utils import MODEL_PATHS, NATIVE_WEIGHTS, process_assistant_content, resolve_model_path, seed_generation
 
 
 def _require_streamlit_run():
@@ -90,11 +91,10 @@ image_url = "https://www.modelscope.cn/api/v1/studio/gongjy/MiniMind/repo?Revisi
 
 
 @st.cache_resource
-def load_model_tokenizer(model_path):
-    model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    model = model.eval().to(device)
-    return model, tokenizer
+def load_model_tokenizer(cfg: ModelConfig):
+    """按 ModelConfig 加载模型（与 chat_llm / serve_openai_api 共享 model_loader.init_model）。
+    cfg.format='hf' → HF 格式目录；'native' → 原生 .pth 权重。"""
+    return init_model(cfg)
 
 
 def _user_bubble(content, live=False):
@@ -123,18 +123,40 @@ def render_sidebar():
             "key": st.sidebar.text_input("API Key", value="none", type="password"),
         }
         slogan = f"Hi, I'm {api['model_name']}"
-        model_path, model_display = None, None
+        model_cfg, model_key, model_display = None, None, None
     else:
-        selected_model = st.sidebar.selectbox('Models', list(MODEL_PATHS.keys()), index=2)  # 默认选择 MiniMind2
-        model_display = MODEL_PATHS[selected_model][1]
-        model_path = resolve_model_path(MODEL_PATHS[selected_model][0])
+        model_format = st.sidebar.radio("模型格式", ["HF 格式", "原生 .pth"], index=0)
+        if model_format == "原生 .pth":
+            # 原生权重：resource/MiniMind2-PyTorch/<weight>_<hidden_size>[_moe].pth
+            weight = st.sidebar.selectbox("权重阶段", NATIVE_WEIGHTS, index=1)  # 默认 full_sft
+            hidden_size = st.sidebar.selectbox("hidden_size", [512, 640, 768], index=0)
+            use_moe = st.sidebar.checkbox("MoE（640 自动开启）", value=(hidden_size == 640)) or hidden_size == 640
+            model_cfg = ModelConfig(
+                load_from='scripts/Model',
+                save_dir='resource/MiniMind2-PyTorch',
+                weight=weight,
+                hidden_size=hidden_size,
+                num_hidden_layers=16 if hidden_size == 768 else 8,
+                use_moe=use_moe,
+                device=device,
+                format='native',
+            )
+            model_key = f"native:{weight}_{hidden_size}{'_moe' if use_moe else ''}"
+            model_display = f"MiniMind-{weight}-{hidden_size}{'MoE' if use_moe else ''}"
+        else:
+            selected_model = st.sidebar.selectbox('Models', list(MODEL_PATHS.keys()), index=2)  # 默认选择 MiniMind2
+            model_path = resolve_model_path(MODEL_PATHS[selected_model][0])
+            model_display = MODEL_PATHS[selected_model][1]
+            model_cfg = ModelConfig(load_from=model_path, device=device, format='hf')
+            model_key = f"hf:{model_path}"
         slogan = f"Hi, I'm {model_display}"
         api = None
 
     return {
         "model_source": model_source,
         "api": api,
-        "model_path": model_path,
+        "model_cfg": model_cfg,
+        "model_key": model_key,
         "slogan": slogan,
         "show_thinking": (api is not None and 'R1' in api["model_name"]) or (api is None and 'R1' in model_display),
     }
@@ -196,6 +218,7 @@ def _handle_local(model, tokenizer, cfg, placeholder):
         top_p=0.85,
         device=device,
         use_kv=st.session_state.enable_kv,
+        hf_model=cfg["model_cfg"].format == 'hf',
     )
 
     if params.use_kv:
@@ -214,6 +237,7 @@ def _handle_local(model, tokenizer, cfg, placeholder):
         placeholder.markdown(process_assistant_content(answer, cfg["show_thinking"]), unsafe_allow_html=True)
 
     if params.use_kv:
+        holder["thread"].join()  # 等生成线程把新 cache 写回 holder（streamer.end() 先于返回值赋值，需 join）
         st.session_state.kv_cache = holder.get("cache")
         st.session_state.kv_all_ids = kv["all_ids"]
     return answer
@@ -247,7 +271,7 @@ def main():
     render_header(cfg["slogan"])
 
     if cfg["model_source"] == "本地模型":
-        model, tokenizer = load_model_tokenizer(cfg["model_path"])
+        model, tokenizer = load_model_tokenizer(cfg["model_cfg"])
     else:
         model, tokenizer = None, None
 
@@ -258,11 +282,11 @@ def main():
         st.session_state.kv_cache = None
         st.session_state.kv_all_ids = None
         st.session_state.kv_model_path = None
-    if cfg["model_source"] == "本地模型" and st.session_state.kv_model_path != cfg["model_path"]:
-        # 切换了模型 → 旧缓存的 K/V 失效，重置
+    if cfg["model_source"] == "本地模型" and st.session_state.kv_model_path != cfg["model_key"]:
+        # 切换了模型（含 HF/原生 互换）→ 旧缓存的 K/V 失效，重置
         st.session_state.kv_cache = None
         st.session_state.kv_all_ids = None
-        st.session_state.kv_model_path = cfg["model_path"]
+        st.session_state.kv_model_path = cfg["model_key"]
 
     messages = st.session_state.messages
     render_chat_history(messages, cfg["show_thinking"])

@@ -14,9 +14,9 @@ from scripts.Model.model_lora import apply_lora, load_lora
 from scripts.Trainer.trainer_utils import get_model_params
 
 
-@dataclass
+@dataclass(frozen=True)
 class ModelConfig:
-    """模型加载所需的全部配置（不依赖 argparse）。"""
+    """模型加载所需的全部配置（不依赖 argparse）。frozen：可哈希，供 st.cache_resource 作缓存键。"""
     load_from: str = 'scripts/Model'
     save_dir: str = 'models'
     weight: str = 'full_sft'

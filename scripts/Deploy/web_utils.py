@@ -16,6 +16,10 @@ MODEL_PATHS = {
 }
 
 
+# 原生 .pth 权重可选的训练阶段（resource/MiniMind2-PyTorch/<weight>_<hidden_size>[__moe].pth）
+NATIVE_WEIGHTS = ["pretrain", "full_sft", "dpo", "reason", "ppo_actor", "grpo", "spo"]
+
+
 def resolve_model_path(name):
     """优先使用本地 resource/<name>（离线可用），否则退回 HF repo id（需联网）。"""
     local = os.path.join('resource', name)
