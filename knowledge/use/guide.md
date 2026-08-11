@@ -169,6 +169,37 @@ torchrun --nproc_per_node 2 scripts/Trainer/train.py --stage pretrain
 默认产出：`models/pretrain_512.pth`（`--save_weight pretrain --hidden_size 512`）。
 常用参数：`--epochs`、`--batch_size`、`--learning_rate`、`--max_seq_len`、`--use_moe 1`（MoE）、`--from_weight`（基于已有权重续训）、`--from_resume 1`（断点续训，存档在 `checkpoints/`）。
 
+#### 快速冒烟（可选，验证流程用）
+
+`pretrain_t2t_mini` 有 **127 万条** ≈ 39695 步/epoch（RTX 3060 上约 2.3h/epoch）。只想验证流程时，
+切一个小子集跑几百步即可——看到 loss 稳定下降（如 7.x → 6.x）就说明流程正常：
+
+```bash
+# 1) 切 2 万条子集（几秒）
+head -n 20000 resource/minimind_dataset/pretrain_t2t_mini.jsonl > /tmp/pretrain_smoke.jsonl
+
+# 2) 冒烟：约 625 步，3060 上 2~3 分钟（--use_compile 1 可再快 1.5~2×）
+python scripts/Trainer/train.py --stage pretrain \
+  --data_path /tmp/pretrain_smoke.jsonl --use_compile 1 --save_interval 500
+```
+
+正式训练再换回完整 mini 数据；中途 Ctrl-C 后可加 `--from_resume 1` 从 `checkpoints/` 续跑。
+同样的子集技巧也适用于 `full_sft` 等其他 SFT 阶段（`head -n N sft_t2t_mini.jsonl > /tmp/...`）。
+
+##### 冒烟后试效果
+
+冒烟训完（`models/pretrain_512.pth`）想立刻上手试试：
+
+```bash
+# 预训练模型是「续写」模型：输入一句开头，它接着往下写（不是一问一答）
+python scripts/Deploy/chat_llm.py --save_dir models --weight pretrain --hidden_size 512 --max_new_tokens 128
+```
+
+> ⚠️ 两点预期管理：① 预训练只学会了「接上文」，不会问答；② 冒烟只训了几百步，输出大概率还是
+> 乱码/重复——这正常。它的价值在于**和随机基线对比**（`--weight random` 更乱），能看出模型确实开始「学」了。
+> 想要真正的问答对话，先做 SFT：`python scripts/Trainer/train.py --stage full_sft`（可用同样的子集技巧
+> 快速跑一遍），再用 `--weight full_sft` 聊。
+
 ### 2. 监督微调 SFT（`train.py --stage full_sft`）
 
 预训练完成后，基于 `models/pretrain_512.pth` 做指令微调：
