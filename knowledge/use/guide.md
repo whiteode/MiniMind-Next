@@ -6,8 +6,8 @@
 ```text
 项目结构速览
 ├── scripts/
-│   ├── Deploy/      推理/服务：eval_llm / serve_openai_api / chat_openai_api / web_demo
-│   ├── Trainer/     训练：pretrain / full_sft / lora / dpo / grpo / ppo / spo / reason 等
+│   ├── Deploy/      推理/服务：chat_llm（终端）/ serve_openai_api（API 服务）/ chat_openai_api（客户端）
+│   ├── Trainer/     训练：train.py --stage（pretrain/full_sft/lora/dpo/reason/distillation）+ RL（grpo/ppo/spo）
 │   ├── Tools/       工具：convert_model（权重格式转换）
 │   ├── Model/       模型结构 + tokenizer（tokenizer.json 已自带）
 │   └── Dataset/     数据处理代码（lm_dataset.py）
@@ -21,19 +21,18 @@
 
 ## 第一章：快速体验（scripts/Deploy）
 
-`scripts/Deploy/` 下有 4 个脚本，从「最快上手」到「最完整界面」依次是：
+`scripts/Deploy/` 下有 3 个脚本（另有 kv_generate / model_loader 等共享支撑模块）：
 
 | 脚本 | 形态 | 适合 |
 | --- | --- | --- |
-| `eval_llm.py` | 命令行推理/评测 | 最快验证模型效果 |
+| `chat_llm.py` | 终端聊天（支持跨轮 KV 缓存） | 最快验证模型效果 |
 | `serve_openai_api.py` | OpenAI 兼容 API 服务 | 接入第三方 UI / 其他客户端 |
 | `chat_openai_api.py` | 终端聊天客户端 | 连上 API 服务后在终端聊天 |
-| `web_demo.py` | Streamlit 网页界面 | 图形化对话 |
 
 ### 0. 准备
 
 ```bash
-# 1. 安装依赖（torch / transformers / streamlit 等）
+# 1. 安装依赖（torch / transformers 等）
 pip install -r requirements.txt
 
 # 2. 准备权重
@@ -44,25 +43,29 @@ pip install -r requirements.txt
 ln -s resource/MiniMind2-PyTorch/full_sft_512.pth models/full_sft_512.pth
 ```
 
-### 1. 命令行推理：eval_llm.py（最快）
+### 1. 终端聊天：chat_llm.py（最快）
 
 ```bash
 # 用现成 SFT 权重（full_sft_512.pth）体验对话
-python scripts/Deploy/eval_llm.py --save_dir resource/MiniMind2-PyTorch --weight full_sft --hidden_size 512
+python scripts/Deploy/chat_llm.py --save_dir resource/MiniMind2-PyTorch --weight full_sft --hidden_size 512
 
 # 预训练模型（raw 续写，不走对话模板）
-python scripts/Deploy/eval_llm.py --save_dir resource/MiniMind2-PyTorch --weight pretrain --hidden_size 512
+python scripts/Deploy/chat_llm.py --save_dir resource/MiniMind2-PyTorch --weight pretrain --hidden_size 512
 
 # 推理微调模型 / MoE 模型
-python scripts/Deploy/eval_llm.py --save_dir resource/MiniMind2-PyTorch --weight reason --hidden_size 512
-python scripts/Deploy/eval_llm.py --save_dir resource/MiniMind2-PyTorch --weight full_sft --use_moe 1 --hidden_size 640
+python scripts/Deploy/chat_llm.py --save_dir resource/MiniMind2-PyTorch --weight reason --hidden_size 512
+python scripts/Deploy/chat_llm.py --save_dir resource/MiniMind2-PyTorch --weight full_sft --use_moe 1 --hidden_size 640
 ```
 
-启动后按提示输入：
-- `0` → **自动测试**：跑一组预设 prompt，快速看效果
-- `1` → **手动输入**：逐条聊天（输入空行退出）
+启动后直接输入问题逐条对话，**输入空行退出**。
 
-常用参数：`--temperature`（0.85 默认）、`--top_p`（0.85）、`--max_new_tokens`（8192）、`--historys`（携带几轮历史，需为偶数）、`--lora_weight`（挂 LoRA 权重名）。
+常用参数：`--temperature`（0.85 默认）、`--top_p`（0.85）、`--max_new_tokens`（8192）、`--historys`（携带几轮历史，需为偶数）、`--enable_kv`（启用跨轮 KV 缓存：多轮只算新增 token，加速且保留完整历史）、`--max_cache_tokens`（KV 缓存窗口上限，滑动窗口方案）、`--lora_weight`（挂 LoRA 权重名）。
+
+加载 HF 格式目录（如 `resource/MiniMind2` 或转换产物）用 `--format hf`：
+
+```bash
+python scripts/Deploy/chat_llm.py --format hf --load_from resource/MiniMind2
+```
 
 > 如果 `models/` 里已有权重（自己训练的或软链的），可省略 `--save_dir`，直接用默认 `--save_dir models`。
 
@@ -73,6 +76,8 @@ python scripts/Deploy/eval_llm.py --save_dir resource/MiniMind2-PyTorch --weight
 ```bash
 python scripts/Deploy/serve_openai_api.py --save_dir resource/MiniMind2-PyTorch --weight full_sft --hidden_size 512
 ```
+
+也支持 `--format hf --load_from <HF目录>` 加载 HF 格式模型；`--enable_kv` 可启用跨请求前缀缓存（多轮只 prefill 新增部分）。
 
 起服务后可用 curl 验证：
 
@@ -91,16 +96,6 @@ curl http://127.0.0.1:8998/v1/chat/completions \
 ```bash
 python scripts/Deploy/chat_openai_api.py
 ```
-
-### 4. 网页界面：web_demo.py
-
-```bash
-streamlit run scripts/Deploy/web_demo.py
-```
-
-侧边栏两种来源：
-- **API 模式**：填入 `http://127.0.0.1:8998/v1`、Model ID `minimind`，即可连上 `serve_openai_api.py`；
-- **本地模型**：需要 HF 格式模型目录（`MiniMind2*`，可用第二章的 `convert_model.py` 把 `.pth` 转成 HF 格式后放入，或从 HuggingFace 下载）。
 
 ---
 
@@ -169,7 +164,7 @@ python scripts/Trainer/train.py --stage full_sft
 
 ```bash
 # 命令行（默认就从 models/ 加载）
-python scripts/Deploy/eval_llm.py --weight full_sft --hidden_size 512
+python scripts/Deploy/chat_llm.py --weight full_sft --hidden_size 512
 
 # 或起 API 服务
 python scripts/Deploy/serve_openai_api.py --weight full_sft --hidden_size 512
@@ -208,15 +203,19 @@ python scripts/Trainer/train_spo.py
 python scripts/Tools/convert_model.py   # 默认把 models/full_sft_512.pth 转成 MiniMind2-Small（Llama HF 格式）
 ```
 
-转换后可：
-- 用 `web_demo.py` 本地模式直接加载（把转换出的目录放进根目录即可）；
-- 或直接 `serve_openai_api.py` 部署成 API 接入第三方 UI。
+转换后的 HF 目录可直接用 `--format hf` 加载（`chat_llm.py` / `serve_openai_api.py` 均支持），例如：
+
+```bash
+python scripts/Deploy/chat_llm.py --format hf --load_from MiniMind2-Small
+```
+
+> `convert_model.py` 还提供 `convert_torch2transformers_minimind`（MoE 模型转 HF）与 `convert_transformers2torch`（HF 转回 .pth）两个函数，按需改 main 里的调用。
 
 ---
 
 ## 常见问题
 
-- **找不到 `models/xxx.pth`**：确认权重在 `models/` 下，或用 `--save_dir resource/MiniMind2-PyTorch` 指向现成权重（`eval_llm` / `serve_openai_api`）。
-- **多卡训练**：所有 `train_*.py` 都支持 `torchrun --nproc_per_node N scripts/Trainer/xxx.py`。
+- **找不到 `models/xxx.pth`**：确认权重在 `models/` 下，或用 `--save_dir resource/MiniMind2-PyTorch` 指向现成权重（`chat_llm` / `serve_openai_api`）。
+- **多卡训练**：`train.py --stage <stage>` 与 `train_grpo/ppo/spo.py` 都支持 `torchrun --nproc_per_node N scripts/Trainer/<入口>.py`。
 - **显存不足**：降低 `--batch_size`、`--max_seq_len`，或用 mini 数据、`--hidden_size 512` 的小模型。
 - **断点续训**：加 `--from_resume 1`，自动从 `checkpoints/` 恢复。
