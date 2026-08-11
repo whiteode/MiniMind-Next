@@ -135,6 +135,26 @@ pip install -r requirements.txt
 
 Tokenizer 已随项目自带（`scripts/Model/`），**无需训练**；`train_tokenizer.py` 仅供学习。
 
+### 0.5 导出随机基线（可选，用于对比验证）
+
+正式训练前，可以先导出一份**随机初始化的同架构权重**作为 baseline。用它先跑一轮对话/评测，
+再与训练后的模型对比，就能直观验证「训练确实让模型学到了东西」：
+
+```bash
+# 默认导出 models/random_512.pth（不训练，纯随机初始化）
+python scripts/Tools/export_random_model.py
+```
+
+随机基线也能直接用推理脚本加载（此时输出通常是乱码/无意义重复，属正常）：
+
+```bash
+python scripts/Deploy/chat_llm.py --save_dir models --weight random --hidden_size 512
+```
+
+> 换不同规模/架构的随机基线：`--hidden_size 768 --num_hidden_layers 16`（Base 规模）或
+> `--use_moe 1 --hidden_size 640`（MoE 规模）。训练后同样用 `--save_dir models --weight <阶段>` 加载，
+> 同一 prompt 对比输出即可看出训练效果。
+
 ### 1. 预训练 Pretrain（`train.py --stage pretrain`）
 
 ```bash
