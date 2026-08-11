@@ -208,14 +208,16 @@ python scripts/Deploy/chat_llm.py --save_dir models --weight pretrain --hidden_s
 
 ### 2. 监督微调 SFT（`train.py --stage full_sft`）
 
-预训练完成后，基于 `models/pretrain_512.pth` 做指令微调：
+预训练完成后，基于 `models/pretrain_512.pth` 做指令微调（3060 12GB 最快配置）：
 
 ```bash
-python scripts/Trainer/train.py --stage full_sft
+python scripts/Trainer/train.py --stage full_sft --batch_size 64 --use_compile 1
 ```
 
 默认：`--from_weight pretrain`（加载 `models/pretrain_512.pth`）、`--data_path sft_t2t_mini.jsonl`、产出 `models/full_sft_512.pth`。
 训练完成后你就有了一个**能对话的模型**。
+
+> ⚠️ 默认 batch 16 会非常慢（90 万条 ×2 epoch ≈ 11 万步）。务必加大 batch：上面 batch 64 约 **1~1.5h** 跑完 2 epoch。
 
 ### 3. 体验刚训好的模型
 
@@ -233,18 +235,19 @@ SFT 系阶段（预训练 / 微调 / LoRA / DPO / 推理 / 蒸馏）统一走 `t
 
 ```bash
 # LoRA 微调：基于 full_sft，挂载轻量可插拔模块（数据 lora_identity.jsonl 等）
-python scripts/Trainer/train.py --stage lora
+python scripts/Trainer/train.py --stage lora --batch_size 64 --use_compile 1
 
-# DPO 偏好优化：让模型更符合人类偏好（数据 dpo.jsonl，基于 full_sft）
-python scripts/Trainer/train.py --stage dpo
+# DPO 偏好优化：让模型更符合人类偏好（数据 dpo.jsonl，基于 full_sft；seq 1024 较长）
+python scripts/Trainer/train.py --stage dpo --batch_size 8 --use_compile 1
 
-# 推理微调（reason）：⚠️ 需要自备 r1_mix_1024.jsonl（当前资源目录未提供）
-python scripts/Trainer/train.py --stage reason
+# 推理微调（reason）：⚠️ 需要自备 r1_mix_1024.jsonl（当前资源目录未提供；seq 720）
+python scripts/Trainer/train.py --stage reason --batch_size 32 --use_compile 1
 
-# 蒸馏（用大模型输出精炼小模型，数据 sft_t2t_mini.jsonl）
-python scripts/Trainer/train.py --stage distillation
+# 蒸馏（用大模型输出精炼小模型，数据 sft_t2t_mini.jsonl；学生+教师双模型）
+python scripts/Trainer/train.py --stage distillation --batch_size 32 --use_compile 1
 
-# RL 阶段（多模型 + reward，独立脚本）
+# RL 阶段（多模型 + reward，独立脚本；⚠️ 瓶颈在生成长度与 1.8B reward 模型，
+# 加大 batch 帮助有限，建议先切子集验证 + 留足时间）
 python scripts/Trainer/train_grpo.py
 python scripts/Trainer/train_ppo.py
 python scripts/Trainer/train_spo.py
@@ -267,6 +270,24 @@ python scripts/Deploy/chat_llm.py --format hf --load_from MiniMind2-Small
 ```
 
 > `convert_model.py` 还提供 `convert_torch2transformers_minimind`（MoE 模型转 HF）与 `convert_transformers2torch`（HF 转回 .pth）两个函数，按需改 main 里的调用。
+
+### 附：batch × 显存规格对照表（单卡全参训练，seq≈340）
+
+> 数值为**单步最大 batch**（全参 + AdamW + bf16；配 `--use_compile 1` 建议取下限）。
+> 梯度累积不占显存，有效 batch 用 `--accumulation_steps` 放大即可。
+> 模型对应：`512 = Small(25M)`、`768 = Base(104M)`、`640-MoE = MoE(145M)`。
+> **512 列为实测**，768 / MoE 为估算（后续可在 GPU 空闲时复测修正）。
+
+| 显存 | 512（25M，实测） | 768（104M） | 640-MoE（145M） |
+| --- | --- | --- | --- |
+| 12GB（3060） | 96（安全 80） | 32~48 | 32~48 |
+| 16GB | ~128 | 64~80 | 64~96 |
+| 24GB（3090/4090） | ~224 | 96~128 | 128~160 |
+| 32GB | ~320 | 128~160 | 192~224 |
+| 48GB | ~512 | 256 | 256~384 |
+| 80GB（A100/H100） | ~768 | 384~512 | 512~640 |
+
+> 想更省显存或换更大模型：用 LoRA（`--stage lora`）可大幅降低占用；纯推理只需约 1/10 显存。
 
 ---
 
