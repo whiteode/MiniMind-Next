@@ -140,26 +140,26 @@ pip install -r requirements.txt
 
 Tokenizer 已随项目自带（`scripts/Model/`），**无需训练**；`train_tokenizer.py` 仅供学习。
 
-### 1. 预训练 Pretrain（`train_pretrain.py`）
+### 1. 预训练 Pretrain（`train.py --stage pretrain`）
 
 ```bash
 # 单卡，快速小规模验证（用 mini 数据）
-python scripts/Trainer/train_pretrain.py \
+python scripts/Trainer/train.py --stage pretrain \
   --data_path resource/minimind_dataset/pretrain_t2t_mini.jsonl
 
 # 多卡 DDP（完整训练用大数据集）
-torchrun --nproc_per_node 2 scripts/Trainer/train_pretrain.py
+torchrun --nproc_per_node 2 scripts/Trainer/train.py --stage pretrain
 ```
 
 默认产出：`models/pretrain_512.pth`（`--save_weight pretrain --hidden_size 512`）。
 常用参数：`--epochs`、`--batch_size`、`--learning_rate`、`--max_seq_len`、`--use_moe 1`（MoE）、`--from_weight`（基于已有权重续训）、`--from_resume 1`（断点续训，存档在 `checkpoints/`）。
 
-### 2. 监督微调 SFT（`train_full_sft.py`）
+### 2. 监督微调 SFT（`train.py --stage full_sft`）
 
 预训练完成后，基于 `models/pretrain_512.pth` 做指令微调：
 
 ```bash
-python scripts/Trainer/train_full_sft.py
+python scripts/Trainer/train.py --stage full_sft
 ```
 
 默认：`--from_weight pretrain`（加载 `models/pretrain_512.pth`）、`--data_path sft_t2t_mini.jsonl`、产出 `models/full_sft_512.pth`。
@@ -177,26 +177,28 @@ python scripts/Deploy/serve_openai_api.py --weight full_sft --hidden_size 512
 
 ### 4. 进阶训练（可选，按需选择）
 
+SFT 系阶段（预训练 / 微调 / LoRA / DPO / 推理 / 蒸馏）统一走 `train.py --stage`：
+
 ```bash
 # LoRA 微调：基于 full_sft，挂载轻量可插拔模块（数据 lora_identity.jsonl 等）
-python scripts/Trainer/train_lora.py
+python scripts/Trainer/train.py --stage lora
 
 # DPO 偏好优化：让模型更符合人类偏好（数据 dpo.jsonl，基于 full_sft）
-python scripts/Trainer/train_dpo.py
+python scripts/Trainer/train.py --stage dpo
 
-# GRPO / PPO / SPO 强化学习（数据 rlaif.jsonl）
+# 推理微调（reason）：⚠️ 需要自备 r1_mix_1024.jsonl（当前资源目录未提供）
+python scripts/Trainer/train.py --stage reason
+
+# 蒸馏（用大模型输出精炼小模型，数据 sft_t2t_mini.jsonl）
+python scripts/Trainer/train.py --stage distillation
+
+# RL 阶段（多模型 + reward，独立脚本）
 python scripts/Trainer/train_grpo.py
 python scripts/Trainer/train_ppo.py
 python scripts/Trainer/train_spo.py
-
-# 推理微调（reason）：⚠️ 需要自备 r1_mix_1024.jsonl（当前资源目录未提供）
-python scripts/Trainer/train_reason.py
-
-# 蒸馏（用大模型输出精炼小模型，数据 sft_t2t_mini.jsonl）
-python scripts/Trainer/train_distillation.py
 ```
 
-> 这些脚本按流水线依赖前序权重（如 LoRA 需要 `models/full_sft_512.pth`），默认 `--from_weight` 已指向正确前序，产出的权重名分别是 `dpo_512.pth` / `grpo_512.pth` / `ppo_actor_512.pth` / `spo_512.pth` / `reason_512.pth` 等，全部在 `models/`。
+> 这些阶段按流水线依赖前序权重（如 LoRA 需要 `models/full_sft_512.pth`），默认 `--from_weight` 已指向正确前序，产出的权重名分别是 `dpo_512.pth` / `grpo_512.pth` / `ppo_actor_512.pth` / `spo_512.pth` / `reason_512.pth` 等，全部在 `models/`。
 
 ### 5. 导出与部署
 
