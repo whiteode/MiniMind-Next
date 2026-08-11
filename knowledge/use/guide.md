@@ -158,13 +158,19 @@ python scripts/Deploy/chat_llm.py --save_dir models --weight random --hidden_siz
 ### 1. 预训练 Pretrain（`train.py --stage pretrain`）
 
 ```bash
-# 单卡，快速小规模验证（用 mini 数据）
+# 单卡，快速小规模验证（用 mini 数据；3060 12GB 极致性能配置）
 python scripts/Trainer/train.py --stage pretrain \
-  --data_path resource/minimind_dataset/pretrain_t2t_mini.jsonl
+  --data_path resource/minimind_dataset/pretrain_t2t_mini.jsonl \
+  --batch_size 80 --accumulation_steps 4 --use_compile 1
 
 # 多卡 DDP（完整训练用大数据集）
 torchrun --nproc_per_node 2 scripts/Trainer/train.py --stage pretrain
 ```
+
+> 单卡性能参数（RTX 3060 12GB 实测）：`--batch_size 80`（96 是硬上限、104 会 OOM；配
+> `--use_compile 1` 后 80 更稳）、`--accumulation_steps 4`（有效 batch ≈ 320，贴近原 32×8=256，
+> 学习率不用动）、`--use_compile 1`（提速 1.5~2×）。三步叠加约 **3~4×**——一个 epoch 从
+> 默认的 ~2.3h 降到 ~40~50min。若不加 compile 可把 batch 推到 96。
 
 默认产出：`models/pretrain_512.pth`（`--save_weight pretrain --hidden_size 512`）。
 常用参数：`--epochs`、`--batch_size`、`--learning_rate`、`--max_seq_len`、`--use_moe 1`（MoE）、`--from_weight`（基于已有权重续训）、`--from_resume 1`（断点续训，存档在 `checkpoints/`）。
@@ -178,9 +184,9 @@ torchrun --nproc_per_node 2 scripts/Trainer/train.py --stage pretrain
 # 1) 切 2 万条子集（几秒）
 head -n 20000 resource/minimind_dataset/pretrain_t2t_mini.jsonl > /tmp/pretrain_smoke.jsonl
 
-# 2) 冒烟：约 625 步，3060 上 2~3 分钟（--use_compile 1 可再快 1.5~2×）
+# 2) 冒烟：约 250 步，3060 上 1~2 分钟（batch 80 + compile 已是最快）
 python scripts/Trainer/train.py --stage pretrain \
-  --data_path /tmp/pretrain_smoke.jsonl --use_compile 1 --save_interval 500
+  --data_path /tmp/pretrain_smoke.jsonl --batch_size 80 --use_compile 1 --save_interval 500
 ```
 
 正式训练再换回完整 mini 数据；中途 Ctrl-C 后可加 `--from_resume 1` 从 `checkpoints/` 续跑。
