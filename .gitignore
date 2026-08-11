@@ -1,12 +1,32 @@
-model/__pycache__
+# ---- Python ----
 __pycache__/
 *.pyc
-models
+*.pyo
+.venv/
+venv/
+env/
+
+# ---- 训练产物 / 权重 / 数据（大文件不进 git，走 rsync/对象存储）----
+models/
+checkpoints/
+resource/
+minimind_dataset/
+MiniMind2/
+*.pth
+*.safetensors
+*.jsonl
+*.log
+*.tmp
+
+# ---- 第三方 / 生成目录 ----
 website/
 docs-minimind/
-MiniMind2/
+
+# ---- 编辑器 / 系统 ----
 .vscode/
-minimind_dataset/
-resource/
+.idea/
+.DS_Store
+
+# ---- 其他 ----
 .agent/
 .mimocode
