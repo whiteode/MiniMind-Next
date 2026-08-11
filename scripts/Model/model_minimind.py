@@ -138,6 +138,7 @@ import torch.nn.init as init
 import torch.nn.functional as F
 from torch import nn
 from transformers.activations import ACT2FN
+from dataclasses import dataclass
 from typing import Optional, Tuple, List, Union
 from transformers import PreTrainedModel, GenerationMixin, PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -557,6 +558,16 @@ class MiniMindModel(nn.Module):
         return hidden_states, presents, aux_loss
 
 
+@dataclass
+class MiniMindCausalLMOutputWithPast(CausalLMOutputWithPast):
+    """在 CausalLMOutputWithPast 基础上把 aux_loss 声明为正式字段，兼容 torch.compile。
+
+    原先在 forward 里构造后再动态挂 output.aux_loss = aux_loss，普通 Python 没问题，
+    但 torch._dynamo 重建该对象时会把 aux_loss 当作构造参数传入而报错。
+    """
+    aux_loss: Optional[torch.Tensor] = None
+
+
 class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
     config_class = MiniMindConfig
 
@@ -597,6 +608,7 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
             shift_labels = labels[..., 1:].contiguous()
             loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), ignore_index=-100)
 
-        output = CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_key_values, hidden_states=hidden_states)
-        output.aux_loss = aux_loss
-        return output
+        return MiniMindCausalLMOutputWithPast(
+            loss=loss, logits=logits, past_key_values=past_key_values,
+            hidden_states=hidden_states, aux_loss=aux_loss,
+        )
