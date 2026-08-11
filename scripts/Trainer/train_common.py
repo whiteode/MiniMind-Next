@@ -10,6 +10,8 @@ import sys
 
 sys.path.insert(0, os.getcwd())
 
+from dataclasses import dataclass
+
 import torch
 import torch.distributed as dist
 from contextlib import nullcontext
@@ -27,6 +29,22 @@ from scripts.Trainer.trainer_utils import (
 )
 
 DEFAULT_DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+
+
+@dataclass
+class TrainCtx:
+    """单次训练运行上下文：run() 组装，train_epoch 经 ctx 取用模型/优化器/参数（无需模块全局变量）。"""
+    args: object
+    lm_config: object
+    model: object
+    tokenizer: object
+    optimizer: object
+    scaler: object
+    autocast_ctx: object
+    wandb: object = None
+    lora_params: object = None      # lora 阶段
+    ref_model: object = None        # dpo 阶段
+    teacher_model: object = None    # distillation 阶段
 
 
 # ---------------------------------------------------------------------------
