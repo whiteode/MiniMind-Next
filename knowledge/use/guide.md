@@ -291,6 +291,39 @@ python scripts/Deploy/chat_llm.py --format hf --load_from MiniMind2-Small
 
 ---
 
+## 第四章：云迁移 / 数据同步
+
+> 代码走 **git**，数据/权重/续训档走 **rsync**——两者解耦，避免把几十 GB 数据塞进 git。
+
+**云端目标配置**（`scripts/Tools/cloud_config.py`，含凭据已被 gitignore）：
+
+```python
+HOST = '1.2.3.4'     # 必填：云端 SSH 主机
+USER = 'xavier'      # SSH 用户（留空 = 当前 $USER）
+PORT = 22
+PATH = '~/minimind'  # 云端项目路径
+PASSWORD = ''        # 可选：SSH 密码（非空时用 sshpass；推荐 SSH 密钥免密留空）
+```
+
+**代码迁移**（git）：
+
+```bash
+git remote add origin <云端仓库地址>
+git push -u origin master
+```
+
+**数据/权重同步**（`scripts/Tools/sync_data.py`，项目根目录执行）：
+
+```bash
+python scripts/Tools/sync_data.py pull              # 云端 → 本地
+python scripts/Tools/sync_data.py push              # 本地 → 云端
+python scripts/Tools/sync_data.py pull --dirs resource models   # 只同步部分目录
+python scripts/Tools/sync_data.py pull --dry-run                # 预览不动手
+```
+
+配置优先级：`cloud_config.py` > 环境变量（`CLOUD_HOST/USER/PORT/PATH/PASSWORD`）> 默认值。
+密码：配置 `PASSWORD` 时经 `sshpass` 认证（未安装会提示）；长期推荐 SSH 密钥免密。
+
 ## 常见问题
 
 - **找不到 `models/xxx.pth`**：确认权重在 `models/` 下，或用 `--save_dir resource/MiniMind2-PyTorch` 指向现成权重（`chat_llm` / `serve_openai_api`）。
