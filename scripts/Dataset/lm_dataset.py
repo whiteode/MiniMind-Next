@@ -2,8 +2,16 @@ from torch.utils.data import Dataset
 import torch
 import os
 import random
+import json
 from datasets import load_dataset
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+def load_jsonl(jsonl_path):
+    """稳健加载 JSONL：逐行 json.loads，避免 datasets 库对异构字段（如 tools/tool_calls）
+    推断 schema 失败（TypeError: Couldn't cast array ...）。SFT 数据混有函数调用样本时必现。"""
+    with open(jsonl_path, encoding='utf-8') as f:
+        return [json.loads(line) for line in f]
 
 def pre_processing_chat(conversations, add_system_ratio=0.2):
     SYSTEM_PROMPTS = [
@@ -115,7 +123,8 @@ class SFTDataset(Dataset):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.samples = load_dataset('json', data_files=jsonl_path, split='train')
+        # 手动逐行解析：sft_t2t_mini.jsonl 混有 tools/tool_calls 字段，load_dataset 推断 schema 会崩
+        self.samples = load_jsonl(jsonl_path)
         self.bos_id = tokenizer(f'{tokenizer.bos_token}assistant\n', add_special_tokens=False).input_ids
         self.eos_id = tokenizer(f'{tokenizer.eos_token}\n', add_special_tokens=False).input_ids
 
@@ -124,7 +133,20 @@ class SFTDataset(Dataset):
 
     def create_chat_prompt(self, conversations):
         messages = conversations.copy()
-        tools = conversations[0]["functions"] if (conversations and conversations[0]["role"] == "system" and conversations[0].get("functions")) else None
+        # 兼容 tools（字符串 JSON / 列表）与旧版 functions 两种字段；解析失败则忽略
+        tools = None
+        if conversations and conversations[0].get('role') == 'system':
+            raw = conversations[0].get('tools') or conversations[0].get('functions')
+            if raw:
+                tools = json.loads(raw) if isinstance(raw, str) else raw
+        # 兼容 tool_calls 为 JSON 字符串的数据（sft_t2t_mini.jsonl 即如此）：
+        # 不解析的话模板会把字符串逐字符迭代，且 tojson(Undefined) 直接崩
+        for msg in messages:
+            if isinstance(msg.get('tool_calls'), str):
+                try:
+                    msg['tool_calls'] = json.loads(msg['tool_calls'])
+                except Exception:
+                    msg['tool_calls'] = None
         return self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,

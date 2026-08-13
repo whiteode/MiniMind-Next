@@ -219,6 +219,18 @@ python scripts/Trainer/train.py --stage full_sft --batch_size 64 --use_compile 1
 
 > ⚠️ 默认 batch 16 会非常慢（90 万条 ×2 epoch ≈ 11 万步）。务必加大 batch：上面 batch 64 约 **1~1.5h** 跑完 2 epoch。
 
+#### 快速冒烟（可选，验证流程用）
+
+`sft_t2t_mini` 有 **90 万条**，直接跑偏慢。切个子集快速验证流程（batch 64 下约几十步）：
+
+```bash
+head -n 5000 resource/minimind_dataset/sft_t2t_mini.jsonl > /tmp/sft_smoke.jsonl
+python scripts/Trainer/train.py --stage full_sft --data_path /tmp/sft_smoke.jsonl --batch_size 64 --use_compile 1
+```
+
+看到 loss 稳定下降（明显低于随机基线）即说明流程正常；正式训练换回完整数据。
+> 若报 `TypeError: Couldn't cast array ...`，是数据里混有函数调用样本（`tools`/`tool_calls`）导致 datasets 推断 schema 失败，已由 lm_dataset.py 手动 JSONL 加载修复，无需处理。
+
 ### 3. 体验刚训好的模型
 
 ```bash
@@ -251,6 +263,38 @@ python scripts/Trainer/train.py --stage distillation --batch_size 32 --use_compi
 python scripts/Trainer/train_grpo.py
 python scripts/Trainer/train_ppo.py
 python scripts/Trainer/train_spo.py
+```
+
+#### 快速冒烟（可选，各阶段通用）
+
+> 同一套「切子集 → 快速跑几步」技巧适用于所有 SFT 系阶段：先 `head -n N` 切小子集，
+> 冒烟看到 loss 稳定下降即可；正式训练再换回完整数据。以下均默认 `--from_weight` 指向正确前序权重。
+
+```bash
+# 通用切子集（条数按阶段调整）
+head -n 5000 resource/minimind_dataset/sft_t2t_mini.jsonl  > /tmp/sft_smoke.jsonl     # full_sft / distillation
+head -n 3000 resource/minimind_dataset/dpo.jsonl           > /tmp/dpo_smoke.jsonl
+head -n 2000 resource/minimind_dataset/rlaif.jsonl         > /tmp/rl_smoke.jsonl
+head -n 1000 resource/minimind_dataset/lora_medical.jsonl  > /tmp/lora_smoke.jsonl
+
+# LoRA：默认 lora_identity.jsonl 仅 91 条，本身即冒烟量级；也可用 medical 子集
+python scripts/Trainer/train.py --stage lora --batch_size 64
+python scripts/Trainer/train.py --stage lora --data_path /tmp/lora_smoke.jsonl --batch_size 64
+
+# DPO：seq 1024 / batch 8 较吃资源，子集切小一点
+python scripts/Trainer/train.py --stage dpo --data_path /tmp/dpo_smoke.jsonl --batch_size 8
+
+# 推理微调 reason：需自备 r1_mix_1024.jsonl（当前资源目录未提供），先切子集验证
+head -n 2000 <你的 r1_mix_1024.jsonl> > /tmp/reason_smoke.jsonl
+python scripts/Trainer/train.py --stage reason --data_path /tmp/reason_smoke.jsonl --batch_size 32
+
+# 蒸馏：需先有对应规模学生/教师权重（默认 full_sft_512.pth / full_sft_768.pth）
+python scripts/Trainer/train.py --stage distillation --data_path /tmp/sft_smoke.jsonl --batch_size 32
+
+# RL（grpo/ppo/spo）：独立脚本，同样支持 --data_path 切子集，看 reward/kl 是否合理波动
+python scripts/Trainer/train_grpo.py --data_path /tmp/rl_smoke.jsonl
+python scripts/Trainer/train_ppo.py  --data_path /tmp/rl_smoke.jsonl
+python scripts/Trainer/train_spo.py  --data_path /tmp/rl_smoke.jsonl
 ```
 
 > 这些阶段按流水线依赖前序权重（如 LoRA 需要 `models/full_sft_512.pth`），默认 `--from_weight` 已指向正确前序，产出的权重名分别是 `dpo_512.pth` / `grpo_512.pth` / `ppo_actor_512.pth` / `spo_512.pth` / `reason_512.pth` 等，全部在 `models/`。
