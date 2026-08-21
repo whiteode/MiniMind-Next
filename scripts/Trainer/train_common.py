@@ -137,7 +137,7 @@ def make_autocast_ctx(args):
     if 'cuda' not in args.device:
         return nullcontext()
     dtype = torch.bfloat16 if args.dtype == 'bfloat16' else torch.float16
-    return torch.cuda.amp.autocast(dtype=dtype)
+    return torch.amp.autocast('cuda', dtype=dtype)
 
 
 def init_wandb(args, run_name, ckp_data=None):

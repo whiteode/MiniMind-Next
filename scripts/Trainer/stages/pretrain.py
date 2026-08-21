@@ -40,7 +40,7 @@ def run(args):
 
     train_ds = PretrainDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
-    scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == 'float16'))
+    scaler = torch.amp.GradScaler('cuda', enabled=(args.dtype == 'float16'))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
     ctx = TrainCtx(args=args, lm_config=lm_config, model=model, tokenizer=tokenizer,
