@@ -110,7 +110,7 @@ def train_epoch_dpo(ctx, epoch, loader, iters, start_step, beta=0.1):
                            "epoch_time": eta_min})
 
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
-            save_checkpoint(lm_config, model, optimizer, args, epoch, step,
+            save_checkpoint(lm_config, model, optimizer, args, epoch, step, iters=iters,
                             scaler=scaler, wandb=wandb)
 
         del x_chosen, x_rejected, y_chosen, y_rejected, mask_chosen, mask_rejected, x, y, mask

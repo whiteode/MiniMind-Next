@@ -33,3 +33,6 @@ docs-minimind/
 
 # ---- 云配置（含凭据，不提交；模板 cloud_config.example.py 保留）----
 scripts/Tools/cloud_config.py
+
+
+.pytest_cache/

@@ -87,7 +87,7 @@ def train_epoch_reason(ctx, epoch, loader, iters, start_step):
                            "epoch_time": eta_min})
 
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
-            save_checkpoint(lm_config, model, optimizer, args, epoch, step,
+            save_checkpoint(lm_config, model, optimizer, args, epoch, step, iters=iters,
                             scaler=scaler, wandb=wandb)
 
         del input_ids, labels, res, loss

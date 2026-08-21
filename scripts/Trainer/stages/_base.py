@@ -50,7 +50,7 @@ def train_epoch_sft(ctx, epoch, loader, iters, start_step, indices=None):
                            "epoch_time": eta_min})
 
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
-            save_checkpoint(lm_config, model, optimizer, args, epoch, step,
+            save_checkpoint(lm_config, model, optimizer, args, epoch, step, iters=iters,
                             scaler=scaler, wandb=wandb, extra_state={'indices': indices})
 
         del input_ids, labels, res, loss

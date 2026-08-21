@@ -121,7 +121,7 @@ def train_epoch_distillation(ctx, epoch, loader, iters, start_step, alpha=0.0, t
                            "learning_rate": current_lr, "epoch_time": eta_min})
 
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
-            save_checkpoint(lm_config_student, model, optimizer, args, epoch, step,
+            save_checkpoint(lm_config_student, model, optimizer, args, epoch, step, iters=iters,
                             scaler=scaler, wandb=wandb)
 
         del input_ids, labels, loss_mask, res, student_logits, ce_loss, distill_loss, loss

@@ -111,7 +111,7 @@ def grpo_train_epoch(epoch, loader, iters, ref_model, reward_model, reward_token
                 })
 
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
-            save_checkpoint(lm_config, model, optimizer, args, epoch, step,
+            save_checkpoint(lm_config, model, optimizer, args, epoch, step, iters=iters,
                             scheduler=scheduler, wandb=wandb)
 
         del prompt_inputs, outputs, completion_ids, per_token_logps, ref_per_token_logps

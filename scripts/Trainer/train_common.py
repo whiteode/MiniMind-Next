@@ -211,31 +211,38 @@ def for_each_epoch(train_ds, args, start_epoch, start_step, *, train_sampler=Non
 
 
 def save_checkpoint(lm_config, model, optimizer, args, epoch, step, *,
-                    save_weight=None, scaler=None, scheduler=None, wandb=None,
+                    iters=None, save_weight=None, scaler=None, scheduler=None, wandb=None,
                     extra_state=None, weight_saver=None):
-    """保存权重 .pth（half 全量或自定义 weight_saver）+ checkpoints 续训档。
+    """保存 checkpoints 续训档；仅在所有 Epoch 完全训练结束（最终步）时才保存到 models/ 目录。
 
     weight_saver(model, path)：自定义权重写入（如 LoRA 的 save_lora）。
     """
     if not is_main_process():
         return
     save_weight = save_weight or args.save_weight
-    model.eval()
-    if weight_saver is None:
-        raw = getattr(model, 'module', model)
-        raw = getattr(raw, '_orig_mod', raw)
-        moe_suffix = '_moe' if lm_config.use_moe else ''
-        path = f'{args.save_dir}/{save_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
-        state = {k: v.half().cpu() for k, v in raw.state_dict().items()}
-        torch.save(state, path)
-        del state
-    else:
-        path = f'{args.save_dir}/{save_weight}_{lm_config.hidden_size}.pth'
-        weight_saver(model, path)
+
+    # 1. 始终保存 checkpoints/ 续训快照（用于中断后 --from_resume 1 恢复）
     lm_checkpoint(lm_config, weight=save_weight, model=model, optimizer=optimizer,
                   epoch=epoch, step=step, wandb=wandb, save_dir='checkpoints',
                   scaler=scaler, scheduler=scheduler, **(extra_state or {}))
-    model.train()
+
+    # 2. 仅在全部训练完成（最后一个 Epoch 的最后一个 step）时，才导出最终权重到 models/
+    is_final_step = (epoch == args.epochs - 1) and (iters is not None and step == iters - 1)
+    if is_final_step:
+        model.eval()
+        if weight_saver is None:
+            raw = getattr(model, 'module', model)
+            raw = getattr(raw, '_orig_mod', raw)
+            moe_suffix = '_moe' if lm_config.use_moe else ''
+            path = f'{args.save_dir}/{save_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
+            state = {k: v.half().cpu() for k, v in raw.state_dict().items()}
+            torch.save(state, path)
+            del state
+        else:
+            path = f'{args.save_dir}/{save_weight}_{lm_config.hidden_size}.pth'
+            weight_saver(model, path)
+        Logger(f'🎉 训练全部完成！最终模型权重已保存至: {path}')
+        model.train()
 
 
 # ---------------------------------------------------------------------------

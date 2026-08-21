@@ -150,7 +150,7 @@ def ppo_train_epoch(epoch, loader, iters, old_actor_model, ref_model, actor_sche
             old_actor_model.to(args.device)
 
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
-            save_checkpoint(lm_config, actor_model, actor_optimizer, args, epoch, step,
+            save_checkpoint(lm_config, actor_model, actor_optimizer, args, epoch, step, iters=iters,
                             scheduler=actor_scheduler, wandb=wandb,
                             extra_state={'critic_model': critic_model,
                                          'critic_optimizer': critic_optimizer,
