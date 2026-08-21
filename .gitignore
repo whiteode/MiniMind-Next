@@ -14,6 +14,8 @@ minimind_dataset/
 MiniMind2/
 *.pth
 *.safetensors
+*.bin
+minimind_cpp
 *.jsonl
 *.log
 *.tmp

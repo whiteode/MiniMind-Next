@@ -315,6 +315,21 @@ python scripts/Deploy/chat_llm.py --format hf --load_from MiniMind2-Small
 
 > `convert_model.py` 还提供 `convert_torch2transformers_minimind`（MoE 模型转 HF）与 `convert_transformers2torch`（HF 转回 .pth）两个函数，按需改 main 里的调用。
 
+#### 纯 C++ 原生极速推理（CPU / 零第三方依赖）
+
+项目内置了单文件 C++ 原生推理引擎（[src/minimind.cpp](src/minimind.cpp)），支持 GQA 注意力、KV 缓存与 OpenMP 多核并行加速：
+
+```bash
+# 1. 将 HuggingFace 格式模型 (如 resource/MiniMind2) 导出为紧凑二进制 .bin 格式
+python scripts/Tools/export_cpp_bin.py --model_dir resource/MiniMind2 --output models/minimind2.bin
+
+# 2. 编译 C++ 推理程序（开启 OpenMP 与最高优化）
+g++ -O3 -fopenmp -std=c++17 src/minimind.cpp -o minimind_cpp
+
+# 3. 运行交互式终端聊天（毫秒级极速响应）
+./minimind_cpp models/minimind2.bin
+```
+
 ### 附：batch × 显存规格对照表（单卡全参训练，seq≈340）
 
 > 数值为**单步最大 batch**（全参 + AdamW + bf16；配 `--use_compile 1` 建议取下限）。
