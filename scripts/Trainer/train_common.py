@@ -163,7 +163,10 @@ def load_resume_state(ckp_data, model, optimizer, *, scaler=None, scheduler=None
     """从续训档恢复状态，返回 (start_epoch, start_step)。extra 为 [(属性名, 对象), ...]。"""
     if not ckp_data:
         return 0, 0
-    model.load_state_dict(ckp_data['model'], strict=strict)
+    # 兼容 torch.compile 包装（OptimizedModule 的 _orig_mod）或 DDP 包装（module）
+    target_model = getattr(model, '_orig_mod', model)
+    target_model = getattr(target_model, 'module', target_model)
+    target_model.load_state_dict(ckp_data['model'], strict=strict)
     optimizer.load_state_dict(ckp_data['optimizer'])
     if scaler is not None:
         scaler.load_state_dict(ckp_data['scaler'])
