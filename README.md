@@ -1,13 +1,13 @@
 <div align="center">
 
-# 🧠 MiniMind: 极简全流程 LLM 从零训练与 C++ 高性能推理引擎
+# 🧠 MiniMind-Next: 全栈轻量 LLM 实验室与 C++ 原生推理引擎
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.6+](https://img.shields.io/badge/pytorch-2.6+-orange.svg)](https://pytorch.org/)
 [![C++17](https://img.shields.io/badge/c++-17-green.svg)](https://isocpp.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-*专注于全流程极简大模型（26M ~ 145M）的从零训练、全阶段微调对齐（SFT/LoRA/DPO/GRPO/PPO/SPO/蒸馏）与纯 C++ 原生推理。*
+*专为极简、可掌控与高性能边缘部署而生：涵盖 26M ~ 145M 大模型从零预训练、全阶段微调对齐（SFT/LoRA/DPO/RL/蒸馏）、云端弹性算力流与纯 C++ 零依赖原生推理引擎。*
 
 </div>
 
@@ -15,7 +15,7 @@
 
 ## 🌟 项目亮点
 
-- ⚡ **极简清晰的架构**：代码模块化重构，无过度包装，每行训练和推理逻辑清晰透明。
+- ⚡ **模块化全栈架构**：代码深度解耦与面向对象重构，训练路由、模型、分词器、推理引擎各司其职，透明无黑盒。
 - 🎯 **全链路训练覆盖**：
   - **自监督预训练 (Pretrain)**
   - **全量指令微调 (Full SFT)**
@@ -23,13 +23,13 @@
   - **直接偏好优化 (DPO)**
   - **强化学习对齐 (GRPO / PPO / SPO)**
   - **知识蒸馏 (Distillation)** 与 **思维链推理微调 (Reasoning)**
-- 🚀 **极速性能优化**：原生支持 `torch.compile` JIT 编译加速与混合精度，单卡 RTX 3060 提速 3~4 倍，RTX 4090 上 10 分钟即可跑完指令微调全流程。
-- ☁️ **云端轻量训练工具**：针对按量计费云 GPU（如 4090）设计，毫秒级代码同步、自动激活 Conda 环境与 `--shutdown` 自动关机防漏扣费。
-- 💻 **纯 C++ 原生极速推理**：
-  - 零第三方依赖的单文件/模块化 C++ 推理引擎（位于 [src/](src/)）。
-  - 支持 **GQA（分组查询注意力）**、**KV Cache**、**RoPE 旋转编码**、**SwiGLU**。
-  - **OpenMP 多核并行加速**，CPU 上可达 **13+ tok/s**，流式输出自动处理 UTF-8 汉字拼接，彻底杜绝乱码。
-  - 采用现代 **CMake Presets** 统一编译。
+- 🚀 **极速算力优化**：深度集成 `torch.compile` JIT 算子融合与混合精度训练，单卡 RTX 3060 提速 3~4 倍，RTX 4090 上仅需 10 分钟即可跑完指令微调全流程。
+- ☁️ **云端按量计费训练流**：专为租赁 GPU（如 4090）打造轻量 `cloud_train.py`，毫秒级代码热同步、Conda 环境自动激活与 `--shutdown` 自动关机防漏扣费。
+- 💻 **纯 C++ 原生推理引擎**：
+  - 模块化、零第三方依赖的现代 C++ 推理引擎（位于 [src/](src/)）。
+  - 原生支持 **GQA（分组查询注意力）**、**KV Cache**、**RoPE 旋转编码 (rotate_half)**、**SwiGLU**。
+  - **OpenMP 多核并行加速**，CPU 上达到 **13+ tok/s**，流式输出自动处理 UTF-8 汉字拼接，彻底杜绝乱码。
+  - 采用现代 **CMake Presets** 统一构建管理。
 
 ---
 
@@ -185,9 +185,17 @@ python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py
 
 ## 📖 文档导航
 
-- 📘 [MiniMind 完整使用指南](knowledge/use/guide.md)：从零体验、各阶段训练冒烟与参数调优全解析。
+- 📘 [MiniMind-Next 完整使用指南](knowledge/use/guide.md)：从零体验、各阶段训练冒烟与参数调优全解析。
 - 📦 [模型与数据集下载指南](knowledge/use/model_download.md)：权重下载、数据格式与文件组织。
 - 📐 [KL 散度无偏估计推导](knowledge/math/kl散度无偏估计证明.md) & [DPO/GRPO Beta 参数分析](knowledge/math/dpo_grpo_beta.md)。
+
+---
+
+## 💖 致谢 (Acknowledgements)
+
+> *Inspired by and evolved from [MiniMind](https://github.com/jingyaogong/minimind), extensively refactored with modular C++ inference and full-stack enhancements.*
+
+感谢原作者 [jingyaogong](https://github.com/jingyaogong) 开创性的 MiniMind 项目为轻量级大模型全流程探索奠定了坚实的基础。本项目在其启发下进行了面向对象工程化重构、算力加速调优、断点续训闭环以及纯 C++ 原生推理引擎的自主研发与拓展。
 
 ---
 
