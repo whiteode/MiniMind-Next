@@ -59,16 +59,12 @@ def setup_seed(seed: int):
 def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoch=0, step=0, wandb=None, save_dir='checkpoints', **kwargs):
     os.makedirs(save_dir, exist_ok=True)
     moe_path = '_moe' if lm_config.use_moe else ''
-    ckp_path = f'{save_dir}/{weight}_{lm_config.hidden_size}{moe_path}.pth'
     resume_path = f'{save_dir}/{weight}_{lm_config.hidden_size}{moe_path}_resume.pth'
     if model is not None:
         raw_model = model.module if isinstance(model, DistributedDataParallel) else model
         raw_model = getattr(raw_model, '_orig_mod', raw_model)
         state_dict = raw_model.state_dict()
         state_dict = {k: v.half().cpu() for k, v in state_dict.items()}
-        ckp_tmp = ckp_path + '.tmp'
-        torch.save(state_dict, ckp_tmp)
-        os.replace(ckp_tmp, ckp_path)
         wandb_id = None
         if wandb:
             if hasattr(wandb, 'get_run'):
@@ -76,7 +72,6 @@ def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoc
                 wandb_id = getattr(run, 'id', None) if run else None
             else:
                 wandb_id = getattr(wandb, 'id', None)
-
 
         resume_data = {
             'model': state_dict,
@@ -87,8 +82,6 @@ def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoc
             'wandb_id': wandb_id
         }
 
-
-            
         for key, value in kwargs.items():
             if value is not None:
                 if hasattr(value, 'state_dict'):

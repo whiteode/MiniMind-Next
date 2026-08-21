@@ -86,8 +86,18 @@ def init_model(cfg: ModelConfig):
         )
         model = MiniMindForCausalLM(config)
         moe_suffix = '_moe' if cfg.use_moe else ''
-        ckp = f'./{cfg.save_dir}/{cfg.weight}_{cfg.hidden_size}{moe_suffix}.pth'
-        model.load_state_dict(torch.load(ckp, map_location=cfg.device, weights_only=True), strict=True)
+        # 如果 weight 已经以 .pth 结尾或已经包含了 hidden_size/resume，直接使用；否则按标准命名拼接
+        if cfg.weight.endswith('.pth'):
+            ckp = f'./{cfg.save_dir}/{cfg.weight}'
+        elif f'_{cfg.hidden_size}' in cfg.weight:
+            ckp = f'./{cfg.save_dir}/{cfg.weight}{moe_suffix}.pth'
+        else:
+            ckp = f'./{cfg.save_dir}/{cfg.weight}_{cfg.hidden_size}{moe_suffix}.pth'
+        # 兼容 models/ 下的纯权重和 checkpoints/ 下的 resume 续训快照
+        state_dict = torch.load(ckp, map_location=cfg.device, weights_only=True)
+        if isinstance(state_dict, dict) and 'model' in state_dict and isinstance(state_dict['model'], dict):
+            state_dict = state_dict['model']
+        model.load_state_dict(state_dict, strict=True)
         if cfg.lora_weight != 'None':
             apply_lora(model)
             load_lora(model, f'./{cfg.save_dir}/lora/{cfg.lora_weight}_{cfg.hidden_size}.pth')
