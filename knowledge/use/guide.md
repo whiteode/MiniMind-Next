@@ -365,6 +365,18 @@ python scripts/Tools/sync_data.py pull --dirs resource models   # 只同步部�
 python scripts/Tools/sync_data.py pull --dry-run                # 预览不动手
 ```
 
+**一键全自动云端训练**（`scripts/Tools/cloud_train.py`）：
+
+> 一条命令自动化全流程：**自动 Push 资源 → 远程触发训练（实时流式查看日志） → 训练完自动 Pull 产出权重**。
+
+```bash
+# 在本地直接运行，把参数原封不动发给云端执行，并在完成后拉回模型
+python scripts/Tools/cloud_train.py --stage full_sft --batch_size 224 --use_compile 1
+
+# 若云端使用特定 conda 环境 Python：
+python scripts/Tools/cloud_train.py --stage pretrain --py_bin ~/miniforge3/envs/minimind/bin/python
+```
+
 配置优先级：`cloud_config.py` > 环境变量（`CLOUD_HOST/USER/PORT/PATH/PASSWORD`）> 默认值。
 密码：配置 `PASSWORD` 时经 `sshpass` 认证（未安装会提示）；长期推荐 SSH 密钥免密。
 
