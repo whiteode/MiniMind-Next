@@ -1,12 +1,25 @@
-"""针对「云端 GPU 实例按量计费」优化的三步式省钱训练工具。
+"""云端训练轻量运行工具：毫秒级同步本地代码 -> 云端激活 Conda 环境 -> 执行训练并实时流式输出日志。
 
-工作流程：
-  1. [无 GPU / 关机模式] python scripts/Tools/cloud_train.py push
-     -> 先传代码和数据集到云端存储（不计 GPU 费用）。
-  2. [网页开启 GPU 后]   python scripts/Tools/cloud_train.py run --stage full_sft --batch_size 224 --use_compile 1 [--shutdown]
-     -> 在 GPU 开机期间仅跑训练并实时看日志。加 --shutdown 可在训练完后自动关机，防止持续扣费。
-  3. [网页关闭 GPU 后]   python scripts/Tools/cloud_train.py pull
-     -> 关机后，把训练好的模型权重从云端存储拉回本地（不计 GPU 费用）。
+设计思路：
+  - 数据集 (resource/) 和 模型权重 (models/) 由用户自行按需传输，不在此处浪费时间与带宽。
+  - 本工具只负责快速增量同步本地代码 (scripts/) 到云端，并在云端 Conda 环境中执行具体指令，实时透传输出。
+
+用法格式：
+    python scripts/Tools/cloud_train.py run <conda_env> <command...>
+
+示例：
+    # 激活云端的 minimind 环境，运行 full_sft 训练
+    python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py --stage full_sft --batch_size 224 --use_compile 1
+
+    # 激活云端的 base 或 pytorch 环境运行预训练
+    python scripts/Tools/cloud_train.py run pytorch python scripts/Trainer/train.py --stage pretrain --batch_size 224
+
+    # 支持多卡 DDP 指令
+    python scripts/Tools/cloud_train.py run minimind torchrun --nproc_per_node 2 scripts/Trainer/train.py --stage full_sft
+
+    # 可选附加开关：
+    #   --no-sync     跳过代码同步，直接在云端执行命令
+    #   --shutdown    训练命令执行完毕后自动关机（按量计费省钱防漏）
 
 配置依赖 scripts/Tools/cloud_config.py（见 cloud_config.example.py）。
 """
@@ -19,7 +32,7 @@ import sys
 # 确保能正常导入项目内部模块
 sys.path.insert(0, os.getcwd())
 
-from scripts.Tools.sync_data import load_config, run_rsync, build_ssh, DEFAULT_DIRS
+from scripts.Tools.sync_data import load_config, run_rsync, build_ssh
 
 
 def build_ssh_cmd(cfg, remote_command):
@@ -32,89 +45,97 @@ def build_ssh_cmd(cfg, remote_command):
     return ssh_exec
 
 
+def sync_code(cfg, ssh_env):
+    """仅快速同步本地代码目录 (scripts/) 到云端，排除 __pycache__ 等无关文件。"""
+    root = os.getcwd()
+    local_scripts = os.path.join(root, 'scripts')
+    dst = f"{cfg['user']}@{cfg['host']}"
+    remote_scripts = f"{dst}:{cfg['path']}/scripts"
+    print("⚡ 正在增量同步本地代码 (scripts/) 到云端...")
+    run_rsync('push', local_scripts, remote_scripts, ssh_env, dry_run=False)
+    print("✅ 代码同步完成！\n")
+
+
 def main():
     raw_args = sys.argv[1:]
     if not raw_args or raw_args[0] in ('-h', '--help'):
         print(__doc__)
-        print("可用命令：")
-        print("  push                      传代码与数据到云端（开 GPU 前使用，省钱）")
-        print("  run [训练参数] [--shutdown] 仅触发远程训练（开 GPU 后使用，支持训练完自动关机）")
-        print("  pull                      拉回云端 models/ 权重（关 GPU 后使用，省钱）")
         return
+
+    subcmd = raw_args[0]
+    if subcmd != 'run':
+        # 如果用户直接传了 conda_env 或其他命令，提示正确用法
+        sys.exit("错误：用法应为 `python scripts/Tools/cloud_train.py run <conda_env> <command...>`\n查看帮助请运行 `python scripts/Tools/cloud_train.py --help`")
+
+    rest = raw_args[1:]
+    if not rest:
+        sys.exit("错误：缺少 conda 环境名称。用法：`python scripts/Tools/cloud_train.py run <conda_env> <command...>`")
+
+    # 提取可选标记
+    no_sync = '--no-sync' in rest
+    if no_sync:
+        rest.remove('--no-sync')
+
+    auto_shutdown = False
+    if '--shutdown' in rest:
+        auto_shutdown = True
+        rest.remove('--shutdown')
+    elif '--auto-shutdown' in rest:
+        auto_shutdown = True
+        rest.remove('--auto-shutdown')
+
+    if not rest:
+        sys.exit("错误：缺少要执行的具体命令。例如：`python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py ...`")
+
+    conda_env = rest[0]
+    command_to_run = rest[1:]
+
+    if not command_to_run:
+        sys.exit(f"错误：请在 conda 环境 `{conda_env}` 后面跟上你要执行的具体指令。")
 
     cfg = load_config()
     if not cfg['host']:
         sys.exit('错误：未配置云端主机。请在 scripts/Tools/cloud_config.py 设置 HOST（参考 cloud_config.example.py）')
 
-    subcmd = raw_args[0]
     ssh_env = build_ssh(cfg['port'], cfg['password'])
-    dst_prefix = f"{cfg['user']}@{cfg['host']}:{cfg['path']}"
-    root = os.getcwd()
 
-    # 1. 纯 CPU 模式上传
-    if subcmd == 'push':
-        print("=== [省钱模式 Step 1] 关机状态下传输数据/代码至云端 ===")
-        for d in DEFAULT_DIRS:
-            local_dir = os.path.join(root, d)
-            remote_dir = f"{dst_prefix}/{d}"
-            if os.path.exists(local_dir):
-                run_rsync('push', local_dir, remote_dir, ssh_env, dry_run=False)
-        print("✅ 数据与代码已成功同步至云端！现在可以在控制台开启 GPU 实例了。")
+    # 1. 快速将本地代码增量推送到云端（仅 scripts/ 目录，毫秒级完成）
+    if not no_sync:
+        sync_code(cfg, ssh_env)
 
-    # 2. 纯 CPU 模式拉回
-    elif subcmd == 'pull':
-        print("=== [省钱模式 Step 3] 关机状态下拉回模型权重 (models/) ===")
-        local_models = os.path.join(root, 'models')
-        remote_models = f"{dst_prefix}/models"
-        run_rsync('pull', local_models, remote_models, ssh_env, dry_run=False)
-        print("🎉 模型权重已拉回本地 models/ 目录！")
+    # 2. 构造云端 bash 命令：进入项目目录 -> 初始化并激活 conda 环境 -> 执行用户命令
+    cmd_str = shlex.join(command_to_run)
+    shutdown_str = " && (sudo shutdown || shutdown || poweroff)" if auto_shutdown else ""
 
-    # 3. GPU 开启阶段只跑训练
-    elif subcmd == 'run':
-        train_args = raw_args[1:]
-        
-        # 检查是否要求训练完自动关机（省钱利器）
-        auto_shutdown = False
-        if '--shutdown' in train_args:
-            auto_shutdown = True
-            train_args.remove('--shutdown')
-        elif '--auto-shutdown' in train_args:
-            auto_shutdown = True
-            train_args.remove('--auto-shutdown')
+    # 使用 bash 登录 shell 或 source conda.sh 确保 conda activate 可用
+    remote_script = (
+        f"cd {shlex.quote(cfg['path'])} && "
+        f"source ~/.bashrc 2>/dev/null || true; "
+        f"eval \"$(conda shell.bash hook 2>/dev/null || ~/miniforge3/bin/conda shell.bash hook 2>/dev/null || ~/miniconda3/bin/conda shell.bash hook 2>/dev/null || anaconda/bin/conda shell.bash hook 2>/dev/null)\"; "
+        f"conda activate {shlex.quote(conda_env)} && "
+        f"{cmd_str}{shutdown_str}"
+    )
 
-        py_bin = 'python'
-        if '--py_bin' in train_args:
-            idx = train_args.index('--py_bin')
-            py_bin = train_args[idx + 1]
-            del train_args[idx:idx + 2]
+    full_ssh_cmd = build_ssh_cmd(cfg, f"bash -c {shlex.quote(remote_script)}")
 
-        target_script = 'scripts/Trainer/train.py'
-        if '--script' in train_args:
-            idx = train_args.index('--script')
-            target_script = train_args[idx + 1]
-            del train_args[idx:idx + 2]
+    print(f"🚀 [云端执行] 环境: ({conda_env}) | 命令: {cmd_str}")
+    if auto_shutdown:
+        print("💡 已开启 --shutdown，训练结束后远端将自动关机。")
+    print("=" * 70 + "\n")
 
-        print("=== [省钱模式 Step 2] GPU 已开启，开始云端训练 ===")
-        train_args_str = shlex.join(train_args)
-        
-        # 组合远程训练命令，如果要求自动关机，在训练成功后执行 shutdown
-        shutdown_cmd = " && (sudo shutdown || shutdown || poweroff)" if auto_shutdown else ""
-        remote_cmd = f"cd {shlex.quote(cfg['path'])} && {py_bin} {target_script} {train_args_str}{shutdown_cmd}"
-        full_cmd = build_ssh_cmd(cfg, remote_cmd)
+    try:
+        res = subprocess.run(full_ssh_cmd)
+        if res.returncode != 0:
+            sys.exit(f"\n❌ 云端任务异常终止，退出码: {res.returncode}")
+    except KeyboardInterrupt:
+        sys.exit("\n⚠️ 本地监控已中断。云端任务可能仍在后台运行。")
 
-        print(f"> 远程执行: {remote_cmd}\n")
-        try:
-            res = subprocess.run(full_cmd)
-            if res.returncode != 0:
-                sys.exit(f"\n错误：云端训练异常终止，退出码: {res.returncode}")
-        except KeyboardInterrupt:
-            sys.exit("\n本地已取消监控。云端训练仍在进行，请在平台控制台检查进度。")
+    print("\n" + "=" * 70)
+    print("🎉 云端任务已全部执行完成！" + (" (云端主机已触发关机)" if auto_shutdown else ""))
 
-        print("\n✅ 训练完成！" + (" 云端主机正准备自动关机..." if auto_shutdown else " 请在平台控制台关闭 GPU 实例。"))
-        print("💡 关机后，在本地执行 `python scripts/Tools/cloud_train.py pull` 即可把权重拉回本地。")
 
-    else:
-        sys.exit(f"未知命令: '{subcmd}'。请使用 push / run / pull，或查看 --help。")
+if __name__ == '__main__':
+    main()
 
 
 if __name__ == '__main__':
