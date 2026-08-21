@@ -365,16 +365,19 @@ python scripts/Tools/sync_data.py pull --dirs resource models   # 只同步部�
 python scripts/Tools/sync_data.py pull --dry-run                # 预览不动手
 ```
 
-**一键全自动云端训练**（`scripts/Tools/cloud_train.py`）：
+**按量计费省钱训练流**（`scripts/Tools/cloud_train.py`）：
 
-> 一条命令自动化全流程：**自动 Push 资源 → 远程触发训练（实时流式查看日志） → 训练完自动 Pull 产出权重**。
+> 针对云端 GPU 实例按量计费优化：**上传与拉回均在无 GPU / 关机状态下完成，开启 GPU 期间只跑训练**，绝不浪费显存计费时间。
 
 ```bash
-# 在本地直接运行，把参数原封不动发给云端执行，并在完成后拉回模型
-python scripts/Tools/cloud_train.py --stage full_sft --batch_size 224 --use_compile 1
+# 步骤 1：[开 GPU 前 / 免费关机模式] 推送本地数据集与代码至云端
+python scripts/Tools/cloud_train.py push
 
-# 若云端使用特定 conda 环境 Python：
-python scripts/Tools/cloud_train.py --stage pretrain --py_bin ~/miniforge3/envs/minimind/bin/python
+# 步骤 2：[控制台开启 GPU 后] 仅触发远程训练（加 --shutdown 可在训练完成后自动关机，防止持续扣费）
+python scripts/Tools/cloud_train.py run --stage full_sft --batch_size 224 --use_compile 1 --shutdown
+
+# 步骤 3：[控制台关闭 GPU 后] 从云端拉回最新模型权重到本地 models/ 目录
+python scripts/Tools/cloud_train.py pull
 ```
 
 配置优先级：`cloud_config.py` > 环境变量（`CLOUD_HOST/USER/PORT/PATH/PASSWORD`）> 默认值。
