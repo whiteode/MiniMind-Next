@@ -10,7 +10,19 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 # 查找并链接 OpenMP（多核并行加速）
 find_package(OpenMP)
 
-add_executable(minimind_cpp src/minimind.cpp)
+# 源文件列表
+set(SOURCES
+    src/main.cpp
+    src/ops/math_ops.cpp
+    src/tokenizer/tokenizer.cpp
+    src/sampler/sampler.cpp
+    src/model/model.cpp
+)
+
+# 添加头文件包含路径
+include_directories(src)
+
+add_executable(minimind_cpp ${SOURCES})
 
 if(OpenMP_CXX_FOUND)
     target_link_libraries(minimind_cpp PRIVATE OpenMP::OpenMP_CXX)
