@@ -82,6 +82,7 @@ int main(int argc, char* argv[]) {
         int pos = 0;
         int max_gen = 256;
         int generated_count = 0;
+        std::string stream_buffer;
 
         // 5.1 Prefill 提示词 Token
         for (; pos < (int)prompt_tokens.size(); ++pos) {
@@ -95,11 +96,18 @@ int main(int argc, char* argv[]) {
             if (next_token == 2 || next_token == 0) { // EOS 结束符
                 break;
             }
-            std::string piece = tokenizer.decode(next_token);
-            std::cout << piece << std::flush;
+            std::string piece = tokenizer.decode_stream(next_token, stream_buffer);
+            if (!piece.empty()) {
+                std::cout << piece << std::flush;
+            }
             generated_count++;
 
             model.forward(state, next_token, pos);
+        }
+
+        // 刷新生成结束时 buffer 中剩余的字节
+        if (!stream_buffer.empty()) {
+            std::cout << stream_buffer << std::flush;
         }
 
         auto end_t = std::chrono::high_resolution_clock::now();

@@ -41,19 +41,25 @@ def export_bin(model_dir: str, output_path: str, max_seq_len: int = 1024):
         f.write(header)
 
         # 2. 写入 Tokenizer 词表
-        # 每个 token: 2 字节 uint16 raw_len + raw_bytes + 2 字节 uint16 decode_len + decode_bytes
+        # 每个 token 写入真实的原始字节序列 (还原 Byte-level BPE 映射，彻底消除中文多字节切分乱码)
         print("正在写入词表...")
+        from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
+        byte_decoder = {v: k for k, v in bytes_to_unicode().items()}
+
         for i in range(vocab_size):
-            raw_token = tokenizer.convert_ids_to_tokens(i) or f"<unk_{i}>"
-            decode_str = tokenizer.decode([i])
+            t = tokenizer.convert_ids_to_tokens(i)
+            if t is None:
+                b_bytes = f"<unk_{i}>".encode('utf-8')
+            elif t.startswith('<|') and t.endswith('|>'):
+                b_bytes = t.encode('utf-8')
+            else:
+                try:
+                    b_bytes = bytes([byte_decoder.get(c, ord(c)) for c in t])
+                except Exception:
+                    b_bytes = t.encode('utf-8')
 
-            b_raw = raw_token.encode('utf-8')
-            b_dec = decode_str.encode('utf-8')
-
-            f.write(struct.pack('H', len(b_raw)))
-            f.write(b_raw)
-            f.write(struct.pack('H', len(b_dec)))
-            f.write(b_dec)
+            f.write(struct.pack('H', len(b_bytes)))
+            f.write(b_bytes)
 
         # 辅助写入 tensor 函数
         def write_tensor(tensor: torch.Tensor, name: str):
