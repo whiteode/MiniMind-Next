@@ -20,6 +20,12 @@ minimind_cpp
 *.log
 *.tmp
 
+# ---- C++ 构建产物与二进制 ----
+build/
+build-*/
+bin/
+minimind_cpp
+
 # ---- 第三方 / 生成目录 ----
 website/
 docs-minimind/

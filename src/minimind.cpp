@@ -81,9 +81,9 @@ struct RunState {
 // ----------------------------------------------------------------------------
 
 struct Tokenizer {
+    int vocab_size;
     std::vector<std::string> raw_vocab;
     std::vector<std::string> decode_vocab;
-    int vocab_size;
 
     Tokenizer(int v_size) : vocab_size(v_size), raw_vocab(v_size), decode_vocab(v_size) {}
 
@@ -303,18 +303,46 @@ int sample_token(std::vector<float>& logits, float temperature = 0.85f, float to
         return best_idx;
     }
 
-    // 应用 Temperature
+    // 1. 应用 Temperature
     for (float& l : logits) l /= temperature;
     softmax(logits.data(), logits.size());
 
-    // 简化版带随机性的抽样
+    // 2. Top-P 截断采样
+    if (top_p > 0.0f && top_p < 1.0f) {
+        std::vector<std::pair<float, int>> probs;
+        probs.reserve(logits.size());
+        for (size_t i = 0; i < logits.size(); ++i) {
+            probs.push_back({logits[i], (int)i});
+        }
+        std::sort(probs.rbegin(), probs.rend());
+
+        float cumsum = 0.0f;
+        int cutoff_idx = (int)probs.size() - 1;
+        for (size_t i = 0; i < probs.size(); ++i) {
+            cumsum += probs[i].first;
+            if (cumsum >= top_p) {
+                cutoff_idx = (int)i;
+                break;
+            }
+        }
+
+        // 归一化截断后的概率
+        float r = (float)rand() / (float)RAND_MAX * cumsum;
+        float acc = 0.0f;
+        for (int i = 0; i <= cutoff_idx; ++i) {
+            acc += probs[i].first;
+            if (r <= acc) return probs[i].second;
+        }
+        return probs[0].second;
+    }
+
     float r = (float)rand() / (float)RAND_MAX;
     float cdf = 0.0f;
     for (size_t i = 0; i < logits.size(); ++i) {
         cdf += logits[i];
-        if (r <= cdf) return i;
+        if (r <= cdf) return (int)i;
     }
-    return logits.size() - 1;
+    return (int)logits.size() - 1;
 }
 
 // ----------------------------------------------------------------------------
@@ -355,13 +383,17 @@ int main(int argc, char* argv[]) {
         uint16_t raw_len = 0;
         if (fread(&raw_len, sizeof(uint16_t), 1, f) != 1) break;
         std::vector<char> raw_buf(raw_len + 1, 0);
-        if (raw_len > 0) fread(raw_buf.data(), sizeof(char), raw_len, f);
+        if (raw_len > 0) {
+            if (fread(raw_buf.data(), sizeof(char), raw_len, f) != raw_len) break;
+        }
         tokenizer.raw_vocab[i] = std::string(raw_buf.data(), raw_len);
 
         uint16_t dec_len = 0;
         if (fread(&dec_len, sizeof(uint16_t), 1, f) != 1) break;
         std::vector<char> dec_buf(dec_len + 1, 0);
-        if (dec_len > 0) fread(dec_buf.data(), sizeof(char), dec_len, f);
+        if (dec_len > 0) {
+            if (fread(dec_buf.data(), sizeof(char), dec_len, f) != dec_len) break;
+        }
         tokenizer.decode_vocab[i] = std::string(dec_buf.data(), dec_len);
     }
 

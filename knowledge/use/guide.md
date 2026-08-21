@@ -317,17 +317,18 @@ python scripts/Deploy/chat_llm.py --format hf --load_from MiniMind2-Small
 
 #### 纯 C++ 原生极速推理（CPU / 零第三方依赖）
 
-项目内置了单文件 C++ 原生推理引擎（[src/minimind.cpp](src/minimind.cpp)），支持 GQA 注意力、KV 缓存与 OpenMP 多核并行加速：
+项目内置了单文件 C++ 原生推理引擎（[src/minimind.cpp](src/minimind.cpp)），支持 GQA 注意力、KV 缓存与 OpenMP 多核并行加速，采用现代 **CMake Presets** 统一构建：
 
 ```bash
 # 1. 将 HuggingFace 格式模型 (如 resource/MiniMind2) 导出为紧凑二进制 .bin 格式
 python scripts/Tools/export_cpp_bin.py --model_dir resource/MiniMind2 --output models/minimind2.bin
 
-# 2. 编译 C++ 推理程序（开启 OpenMP 与最高优化）
-g++ -O3 -fopenmp -std=c++17 src/minimind.cpp -o minimind_cpp
+# 2. 使用 CMake Presets 编译（自动输出可执行程序至 bin/ 目录）
+cmake --preset default
+cmake --build --preset default
 
 # 3. 运行交互式终端聊天（毫秒级极速响应）
-./minimind_cpp models/minimind2.bin
+./bin/minimind_cpp models/minimind2.bin
 ```
 
 ### 附：batch × 显存规格对照表（单卡全参训练，seq≈340）
