@@ -383,6 +383,63 @@ python scripts/Tools/cloud_train.py run minimind torchrun --nproc_per_node 2 scr
 python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py --stage pretrain --batch_size 224 --shutdown
 ```
 
+### 附：RTX 4090（24GB）各阶段训练最优指令集
+
+> 💡 **4090 优化原则**：24GB 显存可将 batch 推至上限，配合 `--use_compile 1` 最大化激发 Ada 架构算力。
+> 配合 `cloud_train.py run <env>` 可在本地一键触发，自动同步代码并在远端以最优速度运行（加 `--shutdown` 防漏关机扣费）。
+
+#### 1. 预训练（Pretrain，seq≈512）
+```bash
+# 本地直接触发云端 4090 最速预训练（batch 224 + compile，~10-15min/epoch）
+python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py --stage pretrain \
+  --data_path resource/minimind_dataset/pretrain_t2t_mini.jsonl \
+  --batch_size 224 --accumulation_steps 2 --use_compile 1 --shutdown
+```
+
+#### 2. 全量指令微调（Full SFT，seq≈340）
+```bash
+# 4090 最优配置：batch 224 + compile（完整 2 个 epoch 仅需 ~10-15 分钟）
+python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py --stage full_sft \
+  --batch_size 224 --use_compile 1 --save_interval 500 --shutdown
+```
+
+#### 3. LoRA 微调（LoRA，显存极低）
+```bash
+# 4090 下 batch 256 秒级迭代
+python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py --stage lora \
+  --batch_size 256 --use_compile 1 --shutdown
+```
+
+#### 4. DPO 偏好对齐（seq 1024 较长）
+```bash
+# 4090 下从 3060 的 batch 8 跃升至 batch 32
+python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py --stage dpo \
+  --batch_size 32 --use_compile 1 --shutdown
+```
+
+#### 5. 推理微调（Reason，seq 720）
+```bash
+# 4090 下 batch 96
+python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py --stage reason \
+  --data_path resource/minimind_dataset/r1_mix_1024.jsonl \
+  --batch_size 96 --use_compile 1 --shutdown
+```
+
+#### 6. 知识蒸馏（Distillation，双模型）
+```bash
+# 学生 512 + 教师 768 双模型并存，4090 下稳跑 batch 96
+python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train.py --stage distillation \
+  --batch_size 96 --use_compile 1 --shutdown
+```
+
+#### 7. 强化学习（GRPO / PPO / SPO）
+```bash
+# 4090 大显存从容容纳 1.8B Reward 模型与生成 Actor
+python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train_grpo.py
+python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train_ppo.py
+python scripts/Tools/cloud_train.py run minimind python scripts/Trainer/train_spo.py
+```
+
 配置优先级：`cloud_config.py` > 环境变量（`CLOUD_HOST/USER/PORT/PATH/PASSWORD`）> 默认值。
 密码：配置 `PASSWORD` 时经 `sshpass` 认证（未安装会提示）；长期推荐 SSH 密钥免密。
 
