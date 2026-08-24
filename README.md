@@ -15,6 +15,13 @@
 
 ---
 
+## About
+
+MiniMind-Next 是一个面向研究与工程的轻量级中文大语言模型项目，致力于在可承受的算力与合理的模型规模下，提供端到端的训练流水线、对齐方法与高性能部署方案。项目包含：统一的训练阶段管理（预训练 / SFT / LoRA / DPO / RL / Distillation）、便捷的模型导出工具、以及一个纯原生 C++ 推理引擎用于低延迟边缘部署与对比实验。文档中提供中英双语使用与部署指南，便于研究复现与工程落地。
+
+MiniMind-Next is a compact Chinese LLM project for research and engineering. It focuses on practical, reproducible workflows for model training, alignment, and deployment on modest hardware. The repository includes a unified staged training pipeline (pretraining, SFT, LoRA, DPO, RL, distillation), model export utilities, and a zero-dependency native C++ inference engine for low-latency edge deployment and performance benchmarking. Bilingual documentation is provided for ease of use and reproducibility.
+
+
 ## 🌟 Key Highlights
 
 - ⚡ **Modular Architecture**: Fully decoupled with object-oriented design across training dispatchers, model definitions, tokenizers, and inference engines.
