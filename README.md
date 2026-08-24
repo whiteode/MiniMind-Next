@@ -43,10 +43,10 @@
 ├── bin/                        # C++ 编译生成的可执行文件目录 (gitignored)
 ├── models/                     # 训练产物 / 模型权重存放目录 (gitignored)
 ├── checkpoints/                # 训练过程现场快照与断点续训存档 (gitignored)
-├── resource/                   # 权重与内置数据集
-│   ├── MiniMind2-PyTorch/      # 现成预训练权重 (.pth)
+├── resource/                   # 权重与训练数据集存放目录 (参考 model_download.md 下载放置)
+│   ├── MiniMind2-PyTorch/      # 原生预训练权重 (.pth)
 │   ├── MiniMind2/              # HuggingFace 格式模型 (safetensors / config.json)
-│   └── minimind_dataset/       # 预训练/SFT/DPO/RL 内置数据集 (.jsonl)
+│   └── minimind_dataset/       # 预训练/SFT/DPO/RL 训练数据集 (.jsonl)
 ├── src/                        # 纯 C++ 原生推理引擎源码
 │   ├── ops/                    # 高性能算子 (RMSNorm, RoPE, MatMul, Softmax)
 │   ├── tokenizer/              # 分词与流式解码引擎 (BPE, ChatML 模板)
@@ -76,18 +76,20 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/minimind.git
-cd minimind
+git clone https://github.com/whiteode/MiniMind-Next.git
+cd MiniMind-Next
 
 # 安装 Python 依赖
 pip install -r requirements.txt
 ```
 
+> 💡 **资源准备**：预训练权重与数据集请参考 [知识库 - 模型下载指南](knowledge/use/model_download.md) 快速下载并放置到 `resource/` 目录下即可。
+
 ---
 
 ### 2. 体验模型对话 (Python 端)
 
-项目在 `resource/` 下已自带现成预训练权重，可直接体验：
+下载权重并放置到 `resource/` 目录后，可直接体验：
 
 ```bash
 # 方式 1：原生权重终端对话（支持跨轮 KV 缓存）
