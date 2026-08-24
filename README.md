@@ -15,12 +15,17 @@
 
 ---
 
-## About
+## 📖 About
 
-MiniMind-Next 是一个面向研究与工程的轻量级中文大语言模型项目，致力于在可承受的算力与合理的模型规模下，提供端到端的训练流水线、对齐方法与高性能部署方案。项目包含：统一的训练阶段管理（预训练 / SFT / LoRA / DPO / RL / Distillation）、便捷的模型导出工具、以及一个纯原生 C++ 推理引擎用于低延迟边缘部署与对比实验。文档中提供中英双语使用与部署指南，便于研究复现与工程落地。
+MiniMind-Next is a compact Chinese LLM laboratory designed for both research and engineering. It focuses on accessible, reproducible, and end-to-end workflows for model pretraining, multi-stage alignment, and high-performance edge deployment on modest consumer hardware. 
 
-MiniMind-Next is a compact Chinese LLM project for research and engineering. It focuses on practical, reproducible workflows for model training, alignment, and deployment on modest hardware. The repository includes a unified staged training pipeline (pretraining, SFT, LoRA, DPO, RL, distillation), model export utilities, and a zero-dependency native C++ inference engine for low-latency edge deployment and performance benchmarking. Bilingual documentation is provided for ease of use and reproducibility.
+The repository features:
+- **Unified Staged Training Pipeline**: Seamlessly run Pretraining, Full SFT, LoRA, DPO, Reinforcement Learning (GRPO / PPO / SPO), and Knowledge Distillation.
+- **Pure Native C++ Inference Engine**: A zero-dependency, modular C++ implementation featuring Grouped Query Attention (GQA), KV Cache, RoPE (`rotate_half`), and OpenMP multi-core acceleration.
+- **Cloud & Automation Workflows**: Millisecond code hot-sync, automatic Conda environment setup, and power-off protection for pay-as-you-go GPU instances.
+- **Bilingual Documentation**: Comprehensive user guides and model resource guides in both English and Chinese.
 
+---
 
 ## 🌟 Key Highlights
 
