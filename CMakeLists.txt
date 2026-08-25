@@ -15,8 +15,10 @@ set(SOURCES
     src/main.cpp
     src/ops/math_ops.cpp
     src/tokenizer/tokenizer.cpp
+    src/tokenizer/mmap_tokenizer.cpp
     src/sampler/sampler.cpp
     src/model/model.cpp
+    src/model/embedding.cpp
 )
 
 # 添加头文件包含路径
@@ -24,13 +26,23 @@ include_directories(src)
 
 add_executable(minimind_cpp ${SOURCES})
 
+# 独立测试目标 (Quantized Embedding & MMap Tokenizer)
+add_executable(test_modules
+    src/test_modules.cpp
+    src/model/embedding.cpp
+    src/tokenizer/mmap_tokenizer.cpp
+)
+
 if(OpenMP_CXX_FOUND)
     target_link_libraries(minimind_cpp PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(test_modules PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
 # 开启性能优化标记与架构指令集（如 AVX2/FMA 等）
 if(MSVC)
     target_compile_options(minimind_cpp PRIVATE /O2 /W4)
+    target_compile_options(test_modules PRIVATE /O2 /W4)
 else()
     target_compile_options(minimind_cpp PRIVATE -O3 -Wall -Wextra -march=native)
+    target_compile_options(test_modules PRIVATE -O3 -Wall -Wextra -march=native)
 endif()
