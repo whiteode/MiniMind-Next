@@ -4,6 +4,7 @@
 #include <string>
 #include <cstdio>
 #include <cstddef>
+#include "model/embedding.h"
 
 namespace minimind {
 
@@ -56,8 +57,7 @@ class MiniMindModel {
 public:
     ModelConfig config;
 
-    // 权重指针
-    float* token_embedding_table = nullptr;
+    // 权重指针 (Transformer 各层与 LM Head)
     std::vector<LayerWeights> layers;
     float* rms_final_weight = nullptr;
     float* wcls = nullptr;
@@ -67,11 +67,11 @@ public:
 
     MiniMindModel();
 
-    // 从二进制文件中读取权重矩阵并完成映射
+    // 从二进制文件中读取权重矩阵并完成映射 (不含 Embedding)
     bool load_weights(FILE* f);
 
-    // 单步 Transformer 前向推理计算，结果写入 state.logits
-    void forward(RunState& state, int token, int pos) const;
+    // 单步 Transformer 前向推理计算，接收 embedding 模块进行首层 Token 查找
+    void forward(RunState& state, const QuantizedEmbedding& embedding, int token, int pos) const;
 };
 
 } // namespace minimind

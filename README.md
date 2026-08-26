@@ -119,16 +119,47 @@ python scripts/Deploy/serve_openai_api.py --save_dir resource/MiniMind2-PyTorch 
 ### 3. Pure C++ Native Inference (CPU / Zero Dependency)
 
 ```bash
-# Step 1: Export HuggingFace model into binary format
+# Step 1: Export Transformer weights, quantized embedding, and binary vocabulary
 python scripts/Tools/export_cpp_bin.py --model_dir resource/MiniMind2 --output models/minimind2.bin
+python scripts/Tools/export_embedding.py --model_path resource/MiniMind2 --methods fp16 uint4_token int4_group --output_dir models/embedding
+python scripts/Tools/export_tokenizer_bin.py --tokenizer_path resource/MiniMind2 --output models/minimind2.vocab.bin
 
 # Step 2: Build with CMake Presets (executable generated in bin/)
 cmake --preset default
 cmake --build --preset default
 
-# Step 3: Launch interactive terminal chat
-./bin/minimind_cpp models/minimind2.bin
+# Step 3: Launch interactive terminal chat (supports specifying embedding quantization)
+# Default (FP16 Embedding):
+./bin/minimind_cpp models/minimind2.bin models/embedding/embedding_fp16.embedding models/minimind2.vocab.bin
+
+# Or memory-saving UINT4 per-token Embedding:
+./bin/minimind_cpp models/minimind2.bin models/embedding/embedding_uint4_token.embedding models/minimind2.vocab.bin
 ```
+
+---
+
+## ⚡ High-Performance Embedding & Tokenizer Architecture
+
+MiniMind-Next features an ultra-compact, decoupled architecture designed for edge devices and CPU deployment:
+
+1. **Quantized Embedding Matrix (`QuantizedEmbedding` / `.embedding`)**:
+   - **Multi-Scheme Quantization**: Supports **14 quantization schemes** across Tensor, Token, and Group granularities (FP16, NF4, INT4/UINT4, INT8/UINT8).
+   - **Zero-Copy MMAP & On-The-Fly Dequantization**: The embedding table is memory-mapped via Linux `mmap` (`LoadMode::DISK`). Only the referenced token vectors are fetched and dynamically dequantized to FP32, drastically cutting RAM requirements on embedded boards without cold startup penalties.
+   - **Portability**: Self-contained IEEE 754 float16 parser with zero external hardware or library dependencies.
+
+2. **Byte-Level BPE Binary Tokenizer (`MMapTokenizer` / `.vocab.bin`)**:
+   - **Exact BPE Merges**: Uses priority queue min-heap merge algorithms and sorted dictionary bisection search to strictly match standard Byte-Level BPE tokenization.
+   - **Zero-Copy Decoding (`std::string_view`)**: Instant $O(1)$ token-to-string-view lookup directly into mapped pages.
+   - **Stream-Buffering**: Built-in `decode_stream` buffer automatically handles UTF-8 multi-byte glyph boundaries, eliminating chopped Chinese characters in streaming mode.
+
+### 📊 Benchmark Example: "介绍一下北极" (Introduce the Arctic)
+
+Tested on consumer CPU with OpenMP multi-threading (104M MiniMind2 Base Model, $dim=768$, $layers=16$):
+
+| Configuration | Embedding Size | Prefill Latency & Throughput | Decode Latency & Throughput | Sample Generation (256 Tokens Max) |
+| :--- | :--- | :--- | :--- | :--- |
+| **FP16 Embedding** | **9.38 MB** | 27 tokens in 560.6 ms (**48.16 tok/s**) | 256 tokens in 8583.6 ms (**29.82 tok/s**) | Comprehensive introduction to Arctic climate, geography, ecology, and polar wildlife |
+| **UINT4 per-token Embedding** | **2.37 MB** *(~75% reduction)* | 27 tokens in 573.7 ms (**47.06 tok/s**) | 134 tokens in 4213.6 ms (**31.80 tok/s**) | Accurate description of geographic location, ice cap environment, and biodiversity |
 
 ---
 

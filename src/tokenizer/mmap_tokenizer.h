@@ -36,6 +36,12 @@ public:
     std::string decode(const std::vector<int>& tokens) const;
     std::string decode(int token_id) const;
 
+    // 流式解码：处理多 Token 拼凑单个多字节 UTF-8 字符（汉字切分）导致的乱码，仅返回已拼装完整的 UTF-8 文本
+    std::string decode_stream(int token_id, std::string& buffer) const;
+
+    // 构建 ChatML 格式的对话提示词
+    std::string apply_chat_template(const std::string& user_query, const std::string& system_prompt = "You are a helpful assistant.") const;
+
     // 零拷贝视图与工具方法
     std::string_view decode_view(uint32_t token_id) const;
     int find_exact_token(std::string_view text) const;
