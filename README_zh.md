@@ -115,16 +115,47 @@ python scripts/Deploy/serve_openai_api.py --save_dir resource/MiniMind2-PyTorch 
 ### 3. 纯 C++ 原生极速推理 (CPU / 零依赖)
 
 ```bash
-# 步骤 1：将 HuggingFace 格式模型转为二进制 .bin 格式
+# 步骤 1：分别导出 Transformer 核心权重、量化 Embedding 与二进制词表
 python scripts/Tools/export_cpp_bin.py --model_dir resource/MiniMind2 --output models/minimind2.bin
+python scripts/Tools/export_embedding.py --model_path resource/MiniMind2 --methods fp16 uint4_token int4_group --output_dir models/embedding
+python scripts/Tools/export_tokenizer_bin.py --tokenizer_path resource/MiniMind2 --output models/minimind2.vocab.bin
 
 # 步骤 2：使用 CMake Presets 一键编译（可执行文件输出至 bin/）
 cmake --preset default
 cmake --build --preset default
 
-# 步骤 3：启动极速 C++ 对话终端
-./bin/minimind_cpp models/minimind2.bin
+# 步骤 3：启动极速 C++ 对话终端（可自由指定不同的量化 Embedding 档位）
+# 默认使用 FP16 高精度 Embedding：
+./bin/minimind_cpp models/minimind2.bin models/embedding/embedding_fp16.embedding models/minimind2.vocab.bin
+
+# 或使用显存极致压缩的 UINT4 per-token 量化 Embedding：
+./bin/minimind_cpp models/minimind2.bin models/embedding/embedding_uint4_token.embedding models/minimind2.vocab.bin
 ```
+
+---
+
+## ⚡ 高性能 Embedding 与 Tokenizer 设计架构
+
+MiniMind-Next 针对端侧嵌入式设备与消费级 CPU 进行了极致解耦与性能优化：
+
+1. **多方案量化 Embedding 矩阵 (`QuantizedEmbedding` / `.embedding`)**：
+   - **14 种量化算法支持**：覆盖 Tensor、Token、Group 三种粒度，支持 FP16、NF4、INT4/UINT4、INT8/UINT8 全系列量化。
+   - **Zero-Copy MMAP 动态反量化**：通过 Linux `mmap` 进行文件级零拷贝映射 (`LoadMode::DISK`)。首层查表时仅按 Token ID 偏移读取对应的压缩字节并实时反量化为 FP32，极大降低物理内存占用，且无需任何冷启动加载等待。
+   - **自包含跨平台**：内建 IEEE 754 float16 解码转换算法，无须依赖特定硬件或外部数学库。
+
+2. **Byte-Level BPE 二进制分词器 (`MMapTokenizer` / `.vocab.bin`)**：
+   - **精确 BPE 合并**：基于小顶堆优先队列与字典序二分查找，严格对齐 HuggingFace 官方 Byte-Level BPE 分词逻辑。
+   - **零拷贝解码 (`std::string_view`)**：通过紧凑二进制词表映射，单 Token 解码直接返回内存视图，实现零额外内存拷贝。
+   - **流式防乱码缓冲**：内置 `decode_stream` 字节边界检测，自动拼接中文汉字等多字节 UTF-8 字符切片，杜绝终端流式打印乱码。
+
+### 📊 实测基准示例：“介绍一下北极”
+
+在标准 CPU 环境（开启 OpenMP 多核并行加速）下实测 MiniMind2 Base 模型（104M 参数，$dim=768$, $layers=16$）：
+
+| 配置档位 | Embedding 文件体积 | Prefill 延迟与吞吐 | Decode 延迟与吞吐 | 实测生成效果 (256 Tokens) |
+| :--- | :--- | :--- | :--- | :--- |
+| **FP16 原生档位** | **9.38 MB** | 27 tokens / 560.6 ms (**48.16 tok/s**) | 256 tokens / 8583.6 ms (**29.82 tok/s**) | 详细介绍北极的气候、冰盖地理、极地生态圈及北极熊海豹等动物 |
+| **UINT4 per-token 量化档位** | **2.37 MB** *(体积压缩 75%)* | 27 tokens / 573.7 ms (**47.06 tok/s**) | 134 tokens / 4213.6 ms (**31.80 tok/s**) | 准确描述北极极地环境、冰冻大陆地理位置及脆弱生态系统的保护意义 |
 
 ---
 

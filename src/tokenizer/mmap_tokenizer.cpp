@@ -219,6 +219,51 @@ std::string MMapTokenizer::decode(int token_id) const {
     return std::string(decode_view(static_cast<uint32_t>(token_id)));
 }
 
+// 辅助函数：根据首字节计算 UTF-8 字符所需的总字节长度
+static int get_utf8_char_len(unsigned char c) {
+    if ((c & 0x80) == 0) return 1;          // 0xxxxxxx (ASCII, 1 字节)
+    if ((c & 0xE0) == 0xC0) return 2;       // 110xxxxx (2 字节)
+    if ((c & 0xF0) == 0xE0) return 3;       // 1110xxxx (常用中文汉字, 3 字节)
+    if ((c & 0xF8) == 0xF0) return 4;       // 11110xxx (Emoji/特殊符, 4 字节)
+    return 1; // 异常字节兜底
+}
+
+std::string MMapTokenizer::decode_stream(int token_id, std::string& buffer) const {
+    std::string piece = decode(token_id);
+    if (piece.empty()) return "";
+
+    buffer += piece;
+
+    size_t valid_bytes = 0;
+    size_t i = 0;
+    while (i < buffer.size()) {
+        unsigned char c = static_cast<unsigned char>(buffer[i]);
+        int char_len = get_utf8_char_len(c);
+
+        if (i + char_len <= buffer.size()) {
+            valid_bytes = i + char_len;
+            i += char_len;
+        } else {
+            // 遇到了尚未拼凑完整的 UTF-8 字符边界，暂留在 buffer 中等待后续 Token
+            break;
+        }
+    }
+
+    if (valid_bytes > 0) {
+        std::string output = buffer.substr(0, valid_bytes);
+        buffer.erase(0, valid_bytes);
+        return output;
+    }
+
+    return "";
+}
+
+std::string MMapTokenizer::apply_chat_template(const std::string& user_query, const std::string& system_prompt) const {
+    return "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+           "<|im_start|>user\n" + user_query + "<|im_end|>\n" +
+           "<|im_start|>assistant\n";
+}
+
 std::string MMapTokenizer::decode(const std::vector<int>& tokens) const {
     std::string result;
     for (int tid : tokens) {

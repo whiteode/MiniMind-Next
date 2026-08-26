@@ -1,9 +1,9 @@
-"""将 HuggingFace 格式的 MiniMind2 (如 resource/MiniMind2) 导出为纯 C++ 推理的二进制 .bin 格式。
+"""将 HuggingFace 格式的 MiniMind2 (如 resource/MiniMind2) 导出为纯 C++ 推理的 Transformer 核心权重 .bin 格式。
 
-导出内容：
-1. 超参数 Header (7 个 int32: dim, hidden_dim, n_layers, n_heads, n_kv_heads, vocab_size, seq_len)
-2. 词表字符串与词表打分 (用于纯 C++ Tokenizer)
-3. 按照 Transformer 执行顺序紧凑排列的所有 fp32 权重 (可在 C++ 中直接 mmap 或 fread 映射为指针)
+说明：
+- 分词器 (.vocab.bin) 请使用 scripts/Tools/export_tokenizer_bin.py 导出。
+- Embedding 矩阵 (.embedding) 请使用 scripts/Tools/export_embedding.py 导出（支持 14 种量化方案）。
+- 本脚本仅导出 Transformer 核心超参数 Header 与各层计算权重。
 
 用法：
     python scripts/Tools/export_cpp_bin.py --model_dir resource/MiniMind2 --output models/minimind2.bin
@@ -13,16 +13,15 @@ import json
 import os
 import struct
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 
 
 def export_bin(model_dir: str, output_path: str, max_seq_len: int = 1024):
-    print(f"正在从 {model_dir} 加载模型与分词器...")
+    print(f"正在从 {model_dir} 加载模型结构与权重...")
     with open(os.path.join(model_dir, 'config.json'), 'r', encoding='utf-8') as f:
         cfg = json.load(f)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    model = AutoModelForCausalLM.from_pretrained(model_dir, torch_dtype=torch.float32)
+    model = AutoModelForCausalLM.from_pretrained(model_dir, dtype=torch.float32)
     state = model.state_dict()
 
     dim = cfg['hidden_size']                      # 768
@@ -40,37 +39,13 @@ def export_bin(model_dir: str, output_path: str, max_seq_len: int = 1024):
         header = struct.pack('7i', dim, hidden_dim, n_layers, n_heads, n_kv_heads, vocab_size, max_seq_len)
         f.write(header)
 
-        # 2. 写入 Tokenizer 词表
-        # 每个 token 写入真实的原始字节序列 (还原 Byte-level BPE 映射，彻底消除中文多字节切分乱码)
-        print("正在写入词表...")
-        from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
-        byte_decoder = {v: k for k, v in bytes_to_unicode().items()}
-
-        for i in range(vocab_size):
-            t = tokenizer.convert_ids_to_tokens(i)
-            if t is None:
-                b_bytes = f"<unk_{i}>".encode('utf-8')
-            elif t.startswith('<|') and t.endswith('|>'):
-                b_bytes = t.encode('utf-8')
-            else:
-                try:
-                    b_bytes = bytes([byte_decoder.get(c, ord(c)) for c in t])
-                except Exception:
-                    b_bytes = t.encode('utf-8')
-
-            f.write(struct.pack('H', len(b_bytes)))
-            f.write(b_bytes)
-
         # 辅助写入 tensor 函数
         def write_tensor(tensor: torch.Tensor, name: str):
             arr = tensor.detach().cpu().to(torch.float32).numpy()
             f.write(arr.tobytes())
 
-        print("正在写入权重参数...")
-        # 3.1 Token Embedding: [vocab_size, dim]
-        write_tensor(state['model.embed_tokens.weight'], 'embed_tokens')
-
-        # 3.2 各层 Transformer Block 权重
+        print("正在写入 Transformer 各层权重参数 (不含 Embedding)...")
+        # 2. 各层 Transformer Block 权重
         for i in range(n_layers):
             # Attention RMSNorm: [dim]
             write_tensor(state[f'model.layers.{i}.input_layernorm.weight'], f'layer.{i}.input_layernorm')
@@ -92,10 +67,10 @@ def export_bin(model_dir: str, output_path: str, max_seq_len: int = 1024):
             # Down proj (SwiGLU): [dim, hidden_dim]
             write_tensor(state[f'model.layers.{i}.mlp.down_proj.weight'], f'layer.{i}.down_proj')
 
-        # 3.3 最终 RMSNorm: [dim]
+        # 3. 最终 RMSNorm: [dim]
         write_tensor(state['model.norm.weight'], 'final_norm')
 
-        # 3.4 输出 LM Head: 如果 tie_word_embeddings 为 true，直接共享或者写一份
+        # 4. 输出 LM Head: [vocab_size, dim]
         if 'lm_head.weight' in state:
             write_tensor(state['lm_head.weight'], 'lm_head')
         else:

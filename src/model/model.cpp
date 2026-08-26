@@ -47,7 +47,6 @@ bool MiniMindModel::load_weights(FILE* f) {
     int n_layers = config.n_layers;
     int kv_dim = config.n_kv_heads * (dim / config.n_heads);
 
-    token_embedding_table = ptr; ptr += (size_t)config.vocab_size * dim;
     layers.resize(n_layers);
     for (int i = 0; i < n_layers; ++i) {
         layers[i].rms_att_weight = ptr; ptr += dim;
@@ -66,16 +65,16 @@ bool MiniMindModel::load_weights(FILE* f) {
     return true;
 }
 
-void MiniMindModel::forward(RunState& s, int token, int pos) const {
+void MiniMindModel::forward(RunState& s, const QuantizedEmbedding& embedding, int token, int pos) const {
     int dim = config.dim;
     int hidden_dim = config.hidden_dim;
     int head_dim = dim / config.n_heads;
     int kv_dim = config.n_kv_heads * head_dim;
     int kv_mul = config.n_heads / config.n_kv_heads; // GQA 倍率 (8 / 2 = 4)
 
-    // 1. 获取 Embedding 向量: s.x = token_embedding_table[token]
-    const float* token_emb = token_embedding_table + token * dim;
-    std::memcpy(s.x.data(), token_emb, dim * sizeof(float));
+    // 1. 通过 QuantizedEmbedding 查表获取首层 Embedding 向量并写入 s.x
+    std::vector<float> token_emb = embedding.forward(token);
+    std::memcpy(s.x.data(), token_emb.data(), dim * sizeof(float));
 
     // 2. 遍历各层 Decoder Block
     for (int l = 0; l < config.n_layers; ++l) {

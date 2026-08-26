@@ -14,7 +14,6 @@ find_package(OpenMP)
 set(SOURCES
     src/main.cpp
     src/ops/math_ops.cpp
-    src/tokenizer/tokenizer.cpp
     src/tokenizer/mmap_tokenizer.cpp
     src/sampler/sampler.cpp
     src/model/model.cpp
@@ -28,7 +27,7 @@ add_executable(minimind_cpp ${SOURCES})
 
 # 独立测试目标 (Quantized Embedding & MMap Tokenizer)
 add_executable(test_modules
-    src/test_modules.cpp
+    src/test/test_modules.cpp
     src/model/embedding.cpp
     src/tokenizer/mmap_tokenizer.cpp
 )
